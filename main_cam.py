@@ -29,7 +29,8 @@ from KalmanFilter import KalmanFilter as KF  # 新增：常速度卡尔曼滤波
 
 # from exceptiongroup import catch
 
-CUDA = True
+# CUDA 环境与 main_video 对齐：自动探测 GPU，可在无 GPU 环境下回退 CPU
+CUDA = bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
 USE_OAK = False
 USE_DH = True
 FPS_TIME = 3
@@ -46,7 +47,7 @@ TIMEOUT = 5
 # communication
 vision = VisionData_t(PORT, BPS, TIMEOUT)
 
-# 初始化3D绘图
+# 如需 3D 可视化，可复用 main_video 的方式；此处保持原逻辑
 if is_show_3d:
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
@@ -95,214 +96,230 @@ def write1(x, y, z):
 
 
 def run():
-    # 初始化相机类
+    """相机在线推理主流程：与 main_video 统一思路，但输入来自实时相机。"""
+    # 1) 初始化相机
     print("Camera type:", cameraType, "    ID:", cameraID)
     camera = InitCamera(cameraType)
     print(cameraID, "init success.")
+
+    # 2) 初始化检测器（与 main_video 统一：优先 YOLO）
     if used_yolo:
-        # 初始化模型推断类（YOLO 强制）
         print("model:", model_path + model_name, "   use_cuda:", CUDA)
-        armor_de = ArmorDetector(model_path, model_name, CUDA, friend_color)  # 我方颜色
+        armor_de = ArmorDetector(model_path, model_name, CUDA, friend_color)
         print("armor detector init success.")
         print("Troop type:", my_TroopType, "   Friend color:", friend_color)
         print("Is show video:", is_show_video, "   Save video times:", save_video_time)
     else:
-        # 初始化CV类
         armor_de = armor_getter(friend_color)
-    # 初始化灯条解算类
+
     light_pos = LightDetector()
-    # 初始化PnP解算类
     pnp_solver = PnPSolver()
-    # 按 main_video 逻辑：不再使用目标选择器/Tracker
-    # target_selector = TargetSelector()
-    # tra = Tracker()
 
-    # ========== KalmanFilter 初始化 ==========
-    # 调整卡尔曼滤波器参数以更好地适应帧率变化
-    # 降低初始协方差，增加过程噪声，使预测更依赖测量值
-    kf = KF(init_cov=1e2, measure_noise=0.15, process_noise=0.8)
-    # 使用名义 FPS（或后续动态 dt）初始化
-    kf.init_kf(dt=1.0 / 30.0)
-    kf_inited = False
-    last_time = time.time()
-    # =======================================
+    # 3) 四个角点 3D KalmanFilter（平移常速度），与 main_video 的角点 KF 思路一致
+    corner_kfs = [None] * 4
+    corner_kf_inited = [False] * 4
+    corner_kf_init_cov = 1e3
+    corner_kf_measure_noise = 0.05
+    corner_kf_process_noise = 0.2
 
-    # 添加 dt 平滑处理相关变量
-    dt_history = []  # 存储最近几次的 dt 值用于平滑处理
-    dt_history_maxlen = 2  # 进一步减少保留的 dt 值数量，提高响应速度
-
-    # 添加帧率监控
-    fps_history = []
-    fps_history_maxlen = 10
-
-    t = time.time()  # 历史保留
-    time1 = time.time()
-    cnt = 0
-    last_vision_yaw = 0
-
+    # 录制视频（在线情况下可选）
     if save_video_time > 0:
         output_file = time.strftime("%Y%m%d_%H%M%S") + "_output.mp4"
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         fps = 30
         ret, orig_frame = camera.get_photo()
+        if not ret:
+            print("Error: camera get first frame failed")
+            return
         frame_size = (orig_frame.shape[1], orig_frame.shape[0])
         video_writer = cv2.VideoWriter(output_file, fourcc, fps, frame_size)
+    else:
+        video_writer = None
 
+    last_time = time.time()
     start_time = time.time()
 
     print("Start working...")
     while True:
-        # 读取视频流的一帧
+        # 读取一帧
         ret, orig_frame = camera.get_photo()
-        if camera_flip:
-            orig_frame = cv2.flip(orig_frame, -1)
         if not ret:
             continue
+        if camera_flip:
+            orig_frame = cv2.flip(orig_frame, -1)
 
-        # 计算 dt（用于 KF）
+        out_img = orig_frame.copy()
+
+        # dt 供 KF 使用（与 main_video 一致裁剪）
         now = time.time()
-        raw_dt = now - last_time
+        dt = float(np.clip(now - last_time, 1e-3, 0.2))
         last_time = now
 
-        # 对 dt 进行限制和平滑处理
-        clipped_dt = float(np.clip(raw_dt, 1e-3, 0.3))  # 稍微放宽上限到0.3秒
-
-        # 更新 dt 历史记录
-        dt_history.append(clipped_dt)
-        if len(dt_history) > dt_history_maxlen:
-            dt_history.pop(0)
-
-        # 使用改进的方法计算 dt
-        if len(dt_history) > 1:
-            # 如果当前 dt 明显大于历史平均值，更相信当前值（目标可能开始快速移动）
-            avg_dt = sum(dt_history) / len(dt_history)
-            if clipped_dt > avg_dt * 1.3:  # 降低阈值使响应更快
-                dt = clipped_dt
-            else:
-                dt = avg_dt * 0.7 + clipped_dt * 0.3  # 加权平均，增加当前值权重
-        else:
-            dt = clipped_dt
-
-        # 根据帧率动态调整卡尔曼滤波器参数
-        kf.adjust_for_frame_rate(dt)
-
-        detected_point = []  # 不再使用旧逻辑
         # 1) 检测
         if used_yolo:
             all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
         else:
             ret_cv, all_detect_armor, out_img = armor_de.get_armors_by_img(orig_frame)
 
-        # 2) 灯条提点 + PnP，取面积最大的装甲板
-        meas = None  # z = [x,y,z]
+        # 2) 灯条提点 + PnP，选面积最大装甲
+        corner_meas_cam = None
         candidates = []
         for detected_armor_box in all_detect_armor:
             if used_yolo:
-                ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box,
-                                                                                       out_img)
+                ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box, out_img)
             else:
                 ret_detected = True
                 detected_armor = detected_armor_box
             if not ret_detected:
                 continue
-            ret_pnp, armor_candidate, out_img = pnp_solver.get_armor_target(detected_armor, out_img, vision.pitch,
-                                                                            vision.yaw)
-            if ret_pnp and armor_candidate and getattr(armor_candidate, 'gimbal_pos', None) is not None:
-                candidates.append(armor_candidate)
+
+            # 中心点 PnP，使用云台当前姿态 vision.pitch/vision.yaw
+            ret_pnp, armor_candidate, out_img = pnp_solver.get_armor_target(
+                detected_armor, out_img, vision.pitch, vision.yaw
+            )
+            if not ret_pnp or armor_candidate is None:
+                continue
+
+            # 角点 PnP：获得 4 角点在相机坐标系下的 3D
+            ret_pnp2, rvec2, tvec2, obj_pts_cam = pnp_solver.solve_pnp(detected_armor)
+            if not ret_pnp2 or obj_pts_cam is None:
+                continue
+
+            candidates.append((armor_candidate, obj_pts_cam))
+
         if candidates:
-            best = max(candidates, key=lambda a: getattr(a, 'area', 0.0))
-            meas = best.gimbal_pos
+            best_armor, best_obj_pts_cam = max(
+                candidates,
+                key=lambda item: getattr(item[0], 'area', 0.0)
+            )
+            corner_meas_cam = best_obj_pts_cam
 
-        # 3) 常速度 KF + 射击点（仅红圈）
-        if meas is not None:
-            gx, gy, gz = float(meas[0]), float(meas[1]), float(meas[2])
-            if not kf_inited:
-                kf.reset_state(x=gx, y=gy, z=gz, vx=0.0, vy=0.0, vz=0.0, init_cov=1e2)
-                kf_inited = True
-            else:
-                # 先验
-                _ = kf.predict_next(dt)
-                # 融合当前量测（后验）
-                kf.correct_by_sensor([gx, gy, gz])
-                post_state, _P = kf.get_state()
-                posterior_pos = post_state[:3].reshape(-1)
-                posterior_vel = post_state[3:].reshape(-1)
-                # 速度大小与方向（水平/俯仰角）
-                speed_mag = float(np.linalg.norm(posterior_vel))
-                horiz_angle_deg = math.degrees(math.atan2(posterior_vel[0], posterior_vel[2] + 1e-9))  # vx vs depth
-                pitch_angle_deg = math.degrees(
-                    math.atan2(posterior_vel[1], math.sqrt(posterior_vel[0] ** 2 + posterior_vel[2] ** 2) + 1e-9))
-                # 子弹飞行时间（距离/初速度）+ 匀速直线前馈
-                bullet_speed = defaults_bullet_speed if 'defaults_bullet_speed' in globals() else 25.0
-                distance = float(np.linalg.norm(posterior_pos))
-                bullet_time = distance / bullet_speed if bullet_speed > 1e-6 else 0.0
+        # 3) 角点 KF + 原始/滤波后矩形 + 射击预测（完全沿用 main_video 流程）
+        if corner_meas_cam is not None:
+            # 顺序约定：LightDetector 输出为 [top_left, bottom_left, top_right, bottom_right]
+            h, w = out_img.shape[:2]
+            raw_pixels = []
+            for p in corner_meas_cam:
+                u, v = camera2xy(p)
+                u = int(max(0, min(w - 1, u)))
+                v = int(max(0, min(h - 1, v)))
+                raw_pixels.append((u, v))
 
-                # 改进的预测算法：根据帧率动态调整预测时间
-                # 当帧率较低时，增加预测时间以补偿较大的时间间隔
-                current_fps = 1.0 / max(dt, 1e-6)
-                if current_fps < 20:  # 当帧率低于20FPS时
-                    # 增加预测时间以补偿低帧率
-                    prediction_factor = min(2.0, 20.0 / max(current_fps, 1e-6))
-                    aim_pos = posterior_pos + posterior_vel * bullet_time * prediction_factor
-                else:
-                    aim_pos = posterior_pos + posterior_vel * bullet_time
+            # 原始矩形（蓝色）
+            tl, bl, tr, br = raw_pixels
+            raw_rect = np.array([tl, bl, br, tr], dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(out_img, [raw_rect], isClosed=True, color=(255, 0, 0), thickness=2)
+            cv2.line(out_img, tl, br, (255, 0, 0), 1)
+            cv2.line(out_img, bl, tr, (255, 0, 0), 1)
 
-                # 仅绘制射击点（红色圆圈）
-                aim_proj = camera2xy(gimbal2camera(aim_pos, 0))
-                cv2.circle(out_img, aim_proj, 11, (0, 0, 255), 2)
-                # 速度箭头（基于当前位置，延伸 0.05s 的运动预测）
-                base_proj = camera2xy(gimbal2camera(posterior_pos, 0))
-                arrow_tip_pos = posterior_pos + posterior_vel * 0.05
-                arrow_tip_proj = camera2xy(gimbal2camera(arrow_tip_pos, 0))
-                cv2.arrowedLine(out_img, base_proj, arrow_tip_proj, (255, 255, 0), 2, tipLength=0.3)
-                # 叠加文字信息：速度、方向、当前位置与射击点
-                cv2.putText(out_img,
-                            f"SPD:{speed_mag:.2f}m/s YawV:{horiz_angle_deg:.1f}deg PitchV:{pitch_angle_deg:.1f}deg",
-                            (50, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
-                cv2.putText(out_img, f"TGT x:{posterior_pos[0]:.2f} y:{posterior_pos[1]:.2f} z:{posterior_pos[2]:.2f}",
-                            (50, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 0), 2)
-                cv2.putText(out_img, f"AIM x:{aim_pos[0]:.2f} y:{aim_pos[1]:.2f} z:{aim_pos[2]:.2f}", (50, 80),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
-                # 控制台实时打印（可按需限频）
-                print(
-                    f"speed={speed_mag:.2f} m/s, yawV={horiz_angle_deg:.1f} deg, pitchV={pitch_angle_deg:.1f} deg, pos=({posterior_pos[0]:.2f},{posterior_pos[1]:.2f},{posterior_pos[2]:.2f}), aim=({aim_pos[0]:.2f},{aim_pos[1]:.2f},{aim_pos[2]:.2f})")
-        # 无量测：按题设通常不会发生；此处不显示提示
+            # 角点量测：相机 -> 云台
+            corner_meas_gimbal = [camera2gimbal(p, 0) for p in corner_meas_cam]
 
-        # 写视频（可选）
-        if save_video_time > 0:
+            filtered_gimbal = []
+            filtered_vel = []
+            filtered_pixels = []
+
+            for idx in range(4):
+                px, py, pz = map(float, corner_meas_gimbal[idx])
+
+                if not corner_kf_inited[idx]:
+                    kf_point = KF(
+                        init_cov=corner_kf_init_cov,
+                        measure_noise=corner_kf_measure_noise,
+                        process_noise=corner_kf_process_noise,
+                        x=px, y=py, z=pz,
+                        vx=0.0, vy=0.0, vz=0.0,
+                    )
+                    # 在线场景使用一个名义 FPS 初始化
+                    kf_point.init_kf(dt=1.0 / 30.0)
+                    corner_kfs[idx] = kf_point
+                    corner_kf_inited[idx] = True
+
+                kf_point = corner_kfs[idx]
+                kf_point.build_F_Q(dt)
+                kf_point.predict_next(dt)
+                kf_point.correct_by_sensor([px, py, pz])
+
+                state_post, _P = kf_point.get_state()
+                pos_post = state_post[:3].reshape(-1)
+                vel_post = state_post[3:].reshape(-1)
+                filtered_gimbal.append(pos_post)
+                filtered_vel.append(vel_post)
+
+                u_f, v_f = camera2xy(gimbal2camera(pos_post, 0))
+                u_f = int(max(0, min(w - 1, u_f)))
+                v_f = int(max(0, min(h - 1, v_f)))
+                filtered_pixels.append((u_f, v_f))
+
+            # 滤波后矩形（绿色）
+            tl_f, bl_f, tr_f, br_f = filtered_pixels
+            filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
+            cv2.line(out_img, tl_f, br_f, (0, 255, 0), 1)
+            cv2.line(out_img, bl_f, tr_f, (0, 255, 0), 1)
+
+            # 计算四边形的边长与角度（与 main_video 保持一致显示逻辑）
+            points = [tl_f, bl_f, br_f, tr_f]
+            edges = []
+            for i in range(4):
+                p1 = np.array(points[i])
+                p2 = np.array(points[(i + 1) % 4])
+                length = np.linalg.norm(p1 - p2)
+                edges.append(length)
+
+            angles = []
+            for i in range(4):
+                prev_point = np.array(points[(i - 1) % 4])
+                curr_point = np.array(points[i])
+                next_point = np.array(points[(i + 1) % 4])
+                vec1 = prev_point - curr_point
+                vec2 = next_point - curr_point
+                cos_angle = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+                cos_angle = np.clip(cos_angle, -1, 1)
+                angle = np.degrees(np.arccos(cos_angle))
+                angles.append(angle)
+
+            for i in range(4):
+                p1 = np.array(points[i])
+                p2 = np.array(points[(i + 1) % 4])
+                midpoint = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2)
+                cv2.putText(out_img, f"{edges[i]:.1f}", midpoint, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+            for i in range(4):
+                point = points[i]
+                text_pos = (point[0] + 5, point[1] + 5)
+                cv2.putText(out_img, f"{angles[i]:.1f}°", text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+            # 由角点 KF 求中心位置与速度，进行射击预测
+            center_pos = np.mean(np.vstack(filtered_gimbal), axis=0)
+            center_vel = np.mean(np.vstack(filtered_vel), axis=0)
+
+            bullet_speed = defaults_bullet_speed if 'defaults_bullet_speed' in globals() else 25.0
+            distance = float(np.linalg.norm(center_pos))
+            bullet_time = distance / bullet_speed if bullet_speed > 1e-6 else 0.0
+            aim_pos = center_pos + center_vel * bullet_time
+
+            aim_proj = camera2xy(gimbal2camera(aim_pos, 0))
+            cv2.circle(out_img, aim_proj, 11, (0, 0, 255), 2)
+
+        # 写出与显示（在线场景写文件可选）
+        if video_writer is not None:
             video_writer.write(out_img)
 
-        # 显示图像
         if is_show_video:
             cv2.imshow("vision output", out_img)
-            cv2.waitKey(1)
-
-        # FPS 统计
-        cnt += 1
-        if cnt == 20:
-            current_fps = 20 / (time.time() - time1)
-            fps_history.append(current_fps)
-            if len(fps_history) > fps_history_maxlen:
-                fps_history.pop(0)
-
-            time1 = time.time()
-            cnt = 0
-            print("fps", current_fps)
-
-            # 如果帧率过低，可以考虑调整一些参数
-            if len(fps_history) >= 5:
-                avg_fps = sum(fps_history) / len(fps_history)
-                if avg_fps < 10:  # 降低阈值到10FPS
-                    print(f"Warning: Low average FPS ({avg_fps:.1f}), prediction accuracy may be affected")
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
 
         # 录制时长到达自动退出
         if 0 < save_video_time < time.time() - start_time:
-            if save_video_time > 0:
-                video_writer.release()
-            cv2.destroyAllWindows()
-            camera.delete()
-            print("video write to", output_file, "over")
             break
+
+    # 清理资源
+    if video_writer is not None:
+        video_writer.release()
+    cv2.destroyAllWindows()
+    camera.delete()
 
 
 if __name__ == "__main__":
@@ -310,4 +327,3 @@ if __name__ == "__main__":
     t2 = threading.Thread(target=run)
     t1.start()
     t2.start()
-    # run()

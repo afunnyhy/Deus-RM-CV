@@ -260,6 +260,51 @@ def run(video_path):
             cv2.line(out_img, tl_f, br_f, (0, 255, 0), 1)
             cv2.line(out_img, bl_f, tr_f, (0, 255, 0), 1)
 
+            # 计算四边形的角度和边长并显示在图像上
+            # 定义四个点的顺序: tl_f, bl_f, br_f, tr_f
+            points = [tl_f, bl_f, br_f, tr_f]
+            
+            # 计算每条边的长度
+            edges = []
+            for i in range(4):
+                p1 = np.array(points[i])
+                p2 = np.array(points[(i + 1) % 4])
+                length = np.linalg.norm(p1 - p2)
+                edges.append(length)
+            
+            # 计算每个角的角度
+            angles = []
+            for i in range(4):
+                prev_point = np.array(points[(i - 1) % 4])
+                curr_point = np.array(points[i])
+                next_point = np.array(points[(i + 1) % 4])
+                
+                # 计算两条边的向量
+                vec1 = prev_point - curr_point
+                vec2 = next_point - curr_point
+                
+                # 计算夹角
+                cos_angle = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+                # 限制cos值在[-1, 1]范围内，防止数值误差
+                cos_angle = np.clip(cos_angle, -1, 1)
+                angle = np.degrees(np.arccos(cos_angle))
+                angles.append(angle)
+            
+            # 将边长和角度信息显示在图像上
+            # 显示边长（在每条边的中点附近）
+            for i in range(4):
+                p1 = np.array(points[i])
+                p2 = np.array(points[(i + 1) % 4])
+                midpoint = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2)
+                cv2.putText(out_img, f"{edges[i]:.1f}", midpoint, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+            
+            # 显示角度（在每个顶点附近）
+            for i in range(4):
+                point = points[i]
+                # 稍微偏移文本位置以避免与点重叠
+                text_pos = (point[0] + 5, point[1] + 5)
+                cv2.putText(out_img, f"{angles[i]:.1f}°", text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
             # 由 4 个角点状态求中心位置和速度（即中心是角点 KF 的结果，不是单独 KF）
             center_pos = np.mean(np.vstack(filtered_gimbal), axis=0)
             center_vel = np.mean(np.vstack(filtered_vel), axis=0)
