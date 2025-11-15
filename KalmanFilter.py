@@ -98,10 +98,11 @@ class KalmanFilter:
         在低帧率时增加过程噪声，使预测更依赖测量值
         """
         # 基于 dt 动态调整过程噪声
-        # dt 越大（帧率越低），过程噪声应该越大
-        base_process_noise = self.process_noise
+        base_process_noise = float(self.process_noise)
         dt_factor = min(10.0, max(1.0, dt / (1.0 / 30.0)))  # 以30FPS为基准
         adjusted_process_noise = base_process_noise * dt_factor
+        # 限制过程噪声的数值范围，避免构造 Q 时浮点溢出
+        adjusted_process_noise = max(1e-6, min(adjusted_process_noise, 1e3))
 
         # 更新过程噪声
         self.process_noise = adjusted_process_noise

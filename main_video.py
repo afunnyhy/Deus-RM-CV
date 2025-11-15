@@ -16,7 +16,7 @@ main_video.py — 离线视频推理与可视化入口
 
 坐标系与单位
 - 相机系：右手系，x 向右，y 向下，z 朝前；
-- 云台系：项目内使用 x 向右，y 向上，z 指向目标；
+- 云台系���项目内使用 x 向右，y 向上，z 指向目标；
 - 角度：内部多为弧度，显示或日志中一般转成角度（°）。
 
 依赖与约定
@@ -98,8 +98,8 @@ def write1(x, y, z):
 
 
 def run(video_path):
-    """离线视频主流程（仅保留：检测 -> PnP -> 常速度 KF 跟踪）。"""
-    # 颜色推断（保持原逻辑，不影响 KF）
+    """离线视频主流程：检测 -> 角点提取 -> PnP -> 角点 3D KF -> 中心点用于射击预测。"""
+    # 颜色推断（保持原逻辑）
     test_color = Color.RED
     if video_path.find("red") != -1:
         test_color = Color.RED
@@ -123,7 +123,7 @@ def run(video_path):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps <= 0 or fps > 240:
-        fps = 30
+        fps = 60
     ret, orig_frame = cap.read()
     if not ret:
         print("Error: Cannot read first frame")
@@ -136,14 +136,15 @@ def run(video_path):
     armor_de = ArmorDetector(model_path, model_name, CUDA, test_color, ".pt")
     light_pos = LightDetector()
     pnp_solver = PnPSolver()
-    # target_selector = TargetSelector()  # 已移除
 
-    # ========== KalmanFilter 初始化 ==========
-    kf = KF(init_cov=1e3, measure_noise=0.05, process_noise=0.2)
-    kf.init_kf(dt=1.0 / fps)
-    kf_inited = False  # 首帧量测启动 KF
+    # ========== 四个角点 3D KalmanFilter（仅平移常速度） ==========
+    corner_kfs = [None] * 4
+    corner_kf_inited = [False] * 4
+    corner_kf_init_cov = 1e3
+    corner_kf_measure_noise = 0.05
+    corner_kf_process_noise = 0.2
+
     last_time = time.time()
-    # =======================================
 
     print("Start processing...")
     while True:
@@ -157,76 +158,120 @@ def run(video_path):
 
         out_img = orig_frame.copy()
 
-        # 计算 dt（用于 KF）
+        # dt 供 KF 使用
         now = time.time()
         dt = float(np.clip(now - last_time, 1e-3, 0.2))
         last_time = now
 
-        # 1) 检测（仅 YOLO 路径）
+        # 1) YOLO 检测
         all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
 
-        # 2) 灯条提点 + PnP，取面积最大的装甲作为量测（本测试假设无遮挡且不会丢失）
-        meas = None  # 量测 z = [x,y,z]
-        candidates = []  # 收集成功解算的 ArmorTargetPoint
+        # 2) 灯条提点 + PnP，取面积最大的装甲作为量测
+        corner_meas_cam = None  # 相机坐标系下 4 角点
+        candidates = []
         for detected_armor_box in all_detect_armor:
             ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box, out_img)
             if not ret_detected:
                 continue
+            # 中心点 PnP 及云台坐标
             ret_pnp, armor_candidate, out_img = pnp_solver.get_armor_target(detected_armor, out_img, 0, 0)
-            if ret_pnp and armor_candidate and hasattr(armor_candidate, 'gimbal_pos') and armor_candidate.gimbal_pos is not None:
-                candidates.append(armor_candidate)
-        if candidates:
-            # 选择面积最大的装甲板
-            best = max(candidates, key=lambda a: getattr(a, 'area', 0.0))
-            meas = best.gimbal_pos
+            if not ret_pnp or armor_candidate is None:
+                continue
+            # 拿 4 个角点 3D（相机坐标系）
+            ret_pnp2, rvec2, tvec2, obj_pts_cam = pnp_solver.solve_pnp(detected_armor)
+            if not ret_pnp2 or obj_pts_cam is None:
+                continue
+            candidates.append((armor_candidate, obj_pts_cam))
 
-        # 3) 常速度 KF：本测试假设永不丢失量测
-        if meas is not None:
-            gx, gy, gz = float(meas[0]), float(meas[1]), float(meas[2])
-            if not kf_inited:
-                kf.reset_state(x=gx, y=gy, z=gz, vx=0.0, vy=0.0, vz=0.0, init_cov=1e3)
-                kf_inited = True
-            else:
-                # ========== 分离先验与后验 ==========
-                # 先验预测（未融合当前量测），不改变上一帧后验之外再进行的状态提前一步
-                prior_state = kf.predict_next(dt)          # statePre
-                prior_pos = prior_state[:3].reshape(-1)
-                # 校正（融合当前量测）
-                kf.correct_by_sensor([gx, gy, gz])
-                post_state, _P = kf.get_state()
-                posterior_pos = post_state[:3].reshape(-1)
-                posterior_vel = post_state[3:].reshape(-1)
-                # 计算射击提前量：简单采用“子弹飞行时间=当前距离/初速度” + 匀速直线假设
-                bullet_speed = defaults_bullet_speed if 'defaults_bullet_speed' in globals() else 25.0
-                distance = float(np.linalg.norm(posterior_pos))
-                bullet_time = distance / bullet_speed if bullet_speed > 1e-6 else 0.0
-                aim_pos = posterior_pos + posterior_vel * bullet_time
-                # ========== 可视化 ==========
-                # 投影函数：云台坐标 -> 相机坐标 -> 像素
-                prior_proj = camera2xy(gimbal2camera(prior_pos, 0))
-                post_proj = camera2xy(gimbal2camera(posterior_pos, 0))
-                aim_proj = camera2xy(gimbal2camera(aim_pos, 0))
-                # 先验：黄色（暂不显示）
-                # cv2.circle(out_img, prior_proj, 10, (0, 255, 255), 2)
-                # cv2.putText(out_img, f"prior x:{prior_pos[0]:.2f} y:{prior_pos[1]:.2f} z:{prior_pos[2]:.2f}",
-                #             (50, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
-                # 后验：绿色（暂不显示）
-                # cv2.circle(out_img, post_proj, 10, (0, 255, 0), 2)
-                # cv2.putText(out_img, f"post  x:{posterior_pos[0]:.2f} y:{posterior_pos[1]:.2f} z:{posterior_pos[2]:.2f}",
-                #             (50, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 0), 2)
-                # 射击点：红色（仅保留圈出位置）
-                cv2.circle(out_img, aim_proj, 11, (0, 0, 255), 2)
-                # cv2.putText(out_img, f"aim   x:{aim_pos[0]:.2f} y:{aim_pos[1]:.2f} z:{aim_pos[2]:.2f}",
-                #             (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
-            # 初次只显示后验（与量测一致）（暂不显示）
-            if not kf_inited:
-                proj = camera2xy(gimbal2camera([gx, gy, gz], 0))
-                # cv2.circle(out_img, proj, 10, (0, 255, 0), 2)
-                # cv2.putText(out_img, f"init x:{gx:.2f} y:{gy:.2f} z:{gz:.2f}", (50,60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,220,0), 2)
-        else:
-            # 理论上不会发生（题设保证无遮挡且不会丢失）（暂不显示文本）
-            # cv2.putText(out_img, "No measurement!", (50, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            pass
+        if candidates:
+            # 选面积最大的装甲板
+            best_armor, best_obj_pts_cam = max(
+                candidates,
+                key=lambda item: getattr(item[0], 'area', 0.0)
+            )
+            corner_meas_cam = best_obj_pts_cam
+
+        # 3) 角点 3D KF + 原始/滤波后矩形绘制 + 由角点中心进行射击预测
+        if corner_meas_cam is not None:
+            # 顺序约定：LightDetector 输出为 [top_left, bottom_left, top_right, bottom_right]
+            # PnPSolver.solve_pnp 使用 detected_armor.camera_pos 作为 2D 输入，故此顺序保持一致
+
+            # 原始 3D 角点：相机 -> 像素
+            h, w = out_img.shape[:2]
+            raw_pixels = []
+            for p in corner_meas_cam:
+                u, v = camera2xy(p)
+                u = int(max(0, min(w - 1, u)))
+                v = int(max(0, min(h - 1, v)))
+                raw_pixels.append((u, v))
+
+            # 画原始矩形（蓝色）：top_left -> bottom_left -> bottom_right -> top_right
+            tl, bl, tr, br = raw_pixels
+            raw_rect = np.array([tl, bl, br, tr], dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(out_img, [raw_rect], isClosed=True, color=(255, 0, 0), thickness=2)
+            # 原始矩形对角线
+            cv2.line(out_img, tl, br, (255, 0, 0), 1)
+            cv2.line(out_img, bl, tr, (255, 0, 0), 1)
+
+            # 角点量测：相机 -> 云台
+            corner_meas_gimbal = [camera2gimbal(p, 0) for p in corner_meas_cam]
+
+            filtered_gimbal = []   # 每个角点滤波后的 3D 位置
+            filtered_vel = []      # 每个角点滤波后的 3D 速度
+            filtered_pixels = []   # 每个角点滤波后的像素坐标
+
+            for idx in range(4):
+                px, py, pz = map(float, corner_meas_gimbal[idx])
+
+                if not corner_kf_inited[idx]:
+                    kf_point = KF(
+                        init_cov=corner_kf_init_cov,
+                        measure_noise=corner_kf_measure_noise,
+                        process_noise=corner_kf_process_noise,
+                        x=px, y=py, z=pz,
+                        vx=0.0, vy=0.0, vz=0.0
+                    )
+                    kf_point.init_kf(dt=1.0 / fps if fps > 1e-6 else 1e-2)
+                    corner_kfs[idx] = kf_point
+                    corner_kf_inited[idx] = True
+
+                kf_point = corner_kfs[idx]
+                # 使用当前 dt 更新 F/Q、预测和校正（仅平移量测）
+                kf_point.build_F_Q(dt)
+                kf_point.predict_next(dt)
+                kf_point.correct_by_sensor([px, py, pz])
+
+                state_post, _P = kf_point.get_state()
+                pos_post = state_post[:3].reshape(-1)
+                vel_post = state_post[3:].reshape(-1)
+                filtered_gimbal.append(pos_post)
+                filtered_vel.append(vel_post)
+
+                u_f, v_f = camera2xy(gimbal2camera(pos_post, 0))
+                u_f = int(max(0, min(w - 1, u_f)))
+                v_f = int(max(0, min(h - 1, v_f)))
+                filtered_pixels.append((u_f, v_f))
+
+            # 画滤波后矩形（绿色），仍然按 tl, bl, br, tr 顺序，避免“8字形”
+            tl_f, bl_f, tr_f, br_f = filtered_pixels
+            filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
+            # 滤波后矩形对角线
+            cv2.line(out_img, tl_f, br_f, (0, 255, 0), 1)
+            cv2.line(out_img, bl_f, tr_f, (0, 255, 0), 1)
+
+            # 由 4 个角点状态求中心位置和速度（即中心是角点 KF 的结果，不是单独 KF）
+            center_pos = np.mean(np.vstack(filtered_gimbal), axis=0)
+            center_vel = np.mean(np.vstack(filtered_vel), axis=0)
+
+            # 用中心位置和速度做射击预测
+            bullet_speed = defaults_bullet_speed if 'defaults_bullet_speed' in globals() else 25.0
+            distance = float(np.linalg.norm(center_pos))
+            bullet_time = distance / bullet_speed if bullet_speed > 1e-6 else 0.0
+            aim_pos = center_pos + center_vel * bullet_time
+
+            aim_proj = camera2xy(gimbal2camera(aim_pos, 0))
+            cv2.circle(out_img, aim_proj, 11, (0, 0, 255), 2)
 
         # 写出与显示
         video_writer.write(out_img)
@@ -242,7 +287,7 @@ def run(video_path):
 
 
 if __name__ == "__main__":
-    # run(video_path=r"./test_data/0325blue.mp4")
+    # run(video_path=r"./test_data/blue10.25.mp4")
     # 其他可选视频：
     # run(video_path=r"./test_data/small_blue.avi")
     # run(video_path=r"./test_data/small_red.avi")
