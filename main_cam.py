@@ -17,14 +17,15 @@ import UART
 from setting import *
 from all_function import *
 from all_type import *
-from pre_armor import Tracker  # 跟踪器类
+# from pre_armor import Tracker  # 跟踪器类（已弃用，使用 KalmanFilter）
 from detect_armor import ArmorDetector  # 模型推理类
 from get_armor_points_cv import armor_getter  # 初始化装甲板检测类
 from UART import VisionData_t  # 通信类
 from camera_get_photo import InitCamera  # 相机类
 from light_detector import LightDetector  # 导入灯条解算类
-from armor_chose import TargetSelector  # 导入目标选择类
+# from armor_chose import TargetSelector  # 导入目标选择类（按 main_video 逻辑不再使用）
 from pnp_solver import PnPSolver  # 导入PnP解算类
+from KalmanFilter import KalmanFilter as KF  # 新增：常速度卡尔曼滤波器
 
 # from exceptiongroup import catch
 
@@ -99,7 +100,7 @@ def run():
     camera = InitCamera(cameraType)
     print(cameraID, "init success.")
     if used_yolo:
-        # 初始化模型推断类
+        # 初始化模型推断类（YOLO 强制）
         print("model:", model_path + model_name, "   use_cuda:", CUDA)
         armor_de = ArmorDetector(model_path, model_name, CUDA, friend_color)  # 我方颜色
         print("armor detector init success.")
@@ -112,28 +113,42 @@ def run():
     light_pos = LightDetector()
     # 初始化PnP解算类
     pnp_solver = PnPSolver()
-    # 初始化目标选择类
-    target_selector = TargetSelector()
-    # #初始化预测类
-    tra = Tracker()
+    # 按 main_video 逻辑：不再使用目标选择器/Tracker
+    # target_selector = TargetSelector()
+    # tra = Tracker()
 
-    t = time.time()  # 初始化时间
+    # ========== KalmanFilter 初始化 ==========
+    # 调整卡尔曼滤波器参数以更好地适应帧率变化
+    # 降低初始协方差，增加过程噪声，使预测更依赖测量值
+    kf = KF(init_cov=1e2, measure_noise=0.15, process_noise=0.8)
+    # 使用名义 FPS（或后续动态 dt）初始化
+    kf.init_kf(dt=1.0 / 30.0)
+    kf_inited = False
+    last_time = time.time()
+    # =======================================
+
+    # 添加 dt 平滑处理相关变量
+    dt_history = []  # 存储最近几次的 dt 值用于平滑处理
+    dt_history_maxlen = 2  # 进一步减少保留的 dt 值数量，提高响应速度
+
+    # 添加帧率监控
+    fps_history = []
+    fps_history_maxlen = 10
+
+    t = time.time()  # 历史保留
     time1 = time.time()
     cnt = 0
     last_vision_yaw = 0
 
     if save_video_time > 0:
-        output_file = time.strftime("%Y%m%d_%H%M%S") + "_output.mp4"  # 导出文件名为时间
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 视频编码器（MP4格式）
-        fps = 30  # 帧率
+        output_file = time.strftime("%Y%m%d_%H%M%S") + "_output.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fps = 30
         ret, orig_frame = camera.get_photo()
-        frame_size = (orig_frame.shape[1], orig_frame.shape[0])  # 视频帧大小（宽度, 高度）
+        frame_size = (orig_frame.shape[1], orig_frame.shape[0])
         video_writer = cv2.VideoWriter(output_file, fourcc, fps, frame_size)
 
     start_time = time.time()
-    armor = None
-    predict_armor = None
-    predicted_armor_yaw = 0
 
     print("Start working...")
     while True:
@@ -144,153 +159,146 @@ def run():
         if not ret:
             continue
 
-        detected_point = []  # 初始化装甲板中心点结果列表
+        # 计算 dt（用于 KF）
+        now = time.time()
+        raw_dt = now - last_time
+        last_time = now
+
+        # 对 dt 进行限制和平滑处理
+        clipped_dt = float(np.clip(raw_dt, 1e-3, 0.3))  # 稍微放宽上限到0.3秒
+
+        # 更新 dt 历史记录
+        dt_history.append(clipped_dt)
+        if len(dt_history) > dt_history_maxlen:
+            dt_history.pop(0)
+
+        # 使用改进的方法计算 dt
+        if len(dt_history) > 1:
+            # 如果当前 dt 明显大于历史平均值，更相信当前值（目标可能开始快速移动）
+            avg_dt = sum(dt_history) / len(dt_history)
+            if clipped_dt > avg_dt * 1.3:  # 降低阈值使响应更快
+                dt = clipped_dt
+            else:
+                dt = avg_dt * 0.7 + clipped_dt * 0.3  # 加权平均，增加当前值权重
+        else:
+            dt = clipped_dt
+
+        # 根据帧率动态调整卡尔曼滤波器参数
+        kf.adjust_for_frame_rate(dt)
+
+        detected_point = []  # 不再使用旧逻辑
+        # 1) 检测
         if used_yolo:
             all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
         else:
-            ret, all_detect_armor, out_img = armor_de.get_armors_by_img(orig_frame)
-        # print(tra.state)
-        is_find = False
+            ret_cv, all_detect_armor, out_img = armor_de.get_armors_by_img(orig_frame)
 
-        for detected_armor_box in all_detect_armor:  # 遍历所有检测到的装甲板
+        # 2) 灯条提点 + PnP，取面积最大的装甲板
+        meas = None  # z = [x,y,z]
+        candidates = []
+        for detected_armor_box in all_detect_armor:
             if used_yolo:
-                # 提取灯条角点
                 ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box,
                                                                                        out_img)
             else:
                 ret_detected = True
                 detected_armor = detected_armor_box
-            if ret_detected:  # 如果灯条角点提取成功
-                # 计算装甲板中心3D坐标
-                ret_pnp, armor, out_img = pnp_solver.get_armor_target(detected_armor, out_img, vision.pitch, vision.yaw)
-                if ret_pnp:  # 如果PnP解算成功, 将装甲板中心点添加到结果列表
-                    detected_point.append(armor)
-
-        cv2.putText(out_img,
-                    f"receive yaw:{vision.yaw * 180 / math.pi:<9.3f} pitch:{vision.pitch * 180 / math.pi:<9.3f} ",
-                    (50, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
-
-        if len(detected_point) > 0:
-            # 选择最佳目标
-            armor = target_selector.select_best_target(detected_point)
-            if armor is None:
+            if not ret_detected:
                 continue
-            # 标记显示识别到的装甲板
-            if used_predict:
-                found_pos2d = camera2xy(gimbal2camera(rotate_around_y(armor.gimbal_pos, -vision.yaw), vision.pitch))
+            ret_pnp, armor_candidate, out_img = pnp_solver.get_armor_target(detected_armor, out_img, vision.pitch,
+                                                                            vision.yaw)
+            if ret_pnp and armor_candidate and getattr(armor_candidate, 'gimbal_pos', None) is not None:
+                candidates.append(armor_candidate)
+        if candidates:
+            best = max(candidates, key=lambda a: getattr(a, 'area', 0.0))
+            meas = best.gimbal_pos
+
+        # 3) 常速度 KF + 射击点（仅红圈）
+        if meas is not None:
+            gx, gy, gz = float(meas[0]), float(meas[1]), float(meas[2])
+            if not kf_inited:
+                kf.reset_state(x=gx, y=gy, z=gz, vx=0.0, vy=0.0, vz=0.0, init_cov=1e2)
+                kf_inited = True
             else:
-                found_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
-            cv2.circle(out_img, found_pos2d, 11, (0, 200, 200), 4)
-            ax, ay, az = armor.gimbal_pos
+                # 先验
+                _ = kf.predict_next(dt)
+                # 融合当前量测（后验）
+                kf.correct_by_sensor([gx, gy, gz])
+                post_state, _P = kf.get_state()
+                posterior_pos = post_state[:3].reshape(-1)
+                posterior_vel = post_state[3:].reshape(-1)
+                # 速度大小与方向（水平/俯仰角）
+                speed_mag = float(np.linalg.norm(posterior_vel))
+                horiz_angle_deg = math.degrees(math.atan2(posterior_vel[0], posterior_vel[2] + 1e-9))  # vx vs depth
+                pitch_angle_deg = math.degrees(
+                    math.atan2(posterior_vel[1], math.sqrt(posterior_vel[0] ** 2 + posterior_vel[2] ** 2) + 1e-9))
+                # 子弹飞行时间（距离/初速度）+ 匀速直线前馈
+                bullet_speed = defaults_bullet_speed if 'defaults_bullet_speed' in globals() else 25.0
+                distance = float(np.linalg.norm(posterior_pos))
+                bullet_time = distance / bullet_speed if bullet_speed > 1e-6 else 0.0
 
-            cv2.putText(out_img,
-                        f"detecting x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{armor.yaw * 180.0 / math.pi:<9.3f}",
-                        (50, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
+                # 改进的预测算法：根据帧率动态调整预测时间
+                # 当帧率较低时，增加预测时间以补偿较大的时间间隔
+                current_fps = 1.0 / max(dt, 1e-6)
+                if current_fps < 20:  # 当帧率低于20FPS时
+                    # 增加预测时间以补偿低帧率
+                    prediction_factor = min(2.0, 20.0 / max(current_fps, 1e-6))
+                    aim_pos = posterior_pos + posterior_vel * bullet_time * prediction_factor
+                else:
+                    aim_pos = posterior_pos + posterior_vel * bullet_time
 
-            is_find = True
-            # print(armor)
-            t_n = time.time()
+                # 仅绘制射击点（红色圆圈）
+                aim_proj = camera2xy(gimbal2camera(aim_pos, 0))
+                cv2.circle(out_img, aim_proj, 11, (0, 0, 255), 2)
+                # 速度箭头（基于当前位置，延伸 0.05s 的运动预测）
+                base_proj = camera2xy(gimbal2camera(posterior_pos, 0))
+                arrow_tip_pos = posterior_pos + posterior_vel * 0.05
+                arrow_tip_proj = camera2xy(gimbal2camera(arrow_tip_pos, 0))
+                cv2.arrowedLine(out_img, base_proj, arrow_tip_proj, (255, 255, 0), 2, tipLength=0.3)
+                # 叠加文字信息：速度、方向、当前位置与射击点
+                cv2.putText(out_img,
+                            f"SPD:{speed_mag:.2f}m/s YawV:{horiz_angle_deg:.1f}deg PitchV:{pitch_angle_deg:.1f}deg",
+                            (50, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+                cv2.putText(out_img, f"TGT x:{posterior_pos[0]:.2f} y:{posterior_pos[1]:.2f} z:{posterior_pos[2]:.2f}",
+                            (50, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 0), 2)
+                cv2.putText(out_img, f"AIM x:{aim_pos[0]:.2f} y:{aim_pos[1]:.2f} z:{aim_pos[2]:.2f}", (50, 80),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+                # 控制台实时打印（可按需限频）
+                print(
+                    f"speed={speed_mag:.2f} m/s, yawV={horiz_angle_deg:.1f} deg, pitchV={pitch_angle_deg:.1f} deg, pos=({posterior_pos[0]:.2f},{posterior_pos[1]:.2f},{posterior_pos[2]:.2f}), aim=({aim_pos[0]:.2f},{aim_pos[1]:.2f},{aim_pos[2]:.2f})")
+        # 无量测：按题设通常不会发生；此处不显示提示
 
-            # 初始化跟踪器
-
-            if tra.state == TracState.LOST:
-                tra.initial(armor)
-                t = t_n
-                continue
-            # ///////////////////////////
-            predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
-            cv2.circle(out_img, predicted_pos2d, 14, (174, 29, 128), 4)
-            # ///////////////////
-            # 更新跟踪器
-            dt = t_n - t
-            predict_armor, out_img = tra.update(armor, dt, out_img)
-            t = t_n
-
-            # 使用预测结果
-            if predict_armor is not None:
-                predicted_armor_yaw = predict_armor.yaw
-                # update_3d_fig(current)
-            else:
-                continue
-        else:
-            target_selector.add_empty_entry()  # 更新历史记录
-
-        # 处理目标丢失的情况
-        if not is_find and tra.state != TracState.LOST:
-            t_n = time.time()
-            dt = t_n - t
-            predict_armor, out_img = tra.update(None, dt, out_img)
-            t = t_n
-
-        if tra.state == TracState.TRACKING:
-            last_vision_yaw = vision.yaw
-
-        # 处理跟踪状态下的目标
-        if tra.state == TracState.TRACKING or tra.state == TracState.TEMP_LOST:
-            angle_pitch = vision.pitch
-            if used_predict:
-                re_transform_pos = rotate_around_y(predict_armor.gimbal_pos, -vision.yaw)
-                predict_armor.gimbal_pos = re_transform_pos
-            else:
-                predict_armor = armor
-            # 用运动云台坐标系计算弹道
-            change_angle = ballistic_compensation(predict_armor.gimbal_pos)
-            ax, ay, az = predict_armor.gimbal_pos
-
-            cv2.putText(out_img,
-                        f"predicted x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{predicted_armor_yaw * 180.0 / math.pi:<9.3f}",
-                        (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
-
-            angle_yoz = -(change_angle - angle_pitch)
-            if az < 0.1:  # 距离过近
-                continue
-            angle_xoz = math.atan(ax / az) + vision.yaw
-            while angle_xoz < -math.pi:
-                angle_xoz += 2 * math.pi
-            while angle_xoz > math.pi:
-                angle_xoz -= 2 * math.pi
-            if tra.state == TracState.TEMP_LOST:
-                angle_xoz = angle_xoz - (vision.yaw - last_vision_yaw)
-            if str(angle_xoz) == "nan":
-                continue
-            if angle_xoz > 0.1 or angle_yoz > 0.1:
-                vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, 0)
-            else:
-                vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, 1)
-
-            # 标记显示预测后的装甲板
-            # predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
-            # cv2.circle(out_img, predicted_pos2d, 14, (174, 29, 128), 4)
-
-            cv2.putText(out_img,
-                        f"sending yaw:{angle_xoz * 180 / math.pi:<9.3f} pitch:{angle_yoz * 180 / math.pi:<9.3f}",
-                        (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
-            print(f"需要在水平方向旋转{angle_xoz * 180 / math.pi}°,需要在竖直方向旋转{angle_yoz * 180 / math.pi}°")
-            # vision.send()
-        else:
-            vision.set_data(vision.yaw, 0, 0, 0, 0)
-        # cv2.putText(out_img,
-        #             f"received pitch:{(vision.pitch * 180 / math.pi) if vision.pitch is not None else 0:<9.3f} yaw:{(vision.yaw * 180 / math.pi) if vision.yaw is not None else 0:<9.3f} ",
-        #             (50, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
-
-        cv2.putText(out_img, f"state:{tra.state},cmid:{vision.CmdID}", (50, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 150, 0), 2)
+        # 写视频（可选）
         if save_video_time > 0:
             video_writer.write(out_img)
 
-        # 显示图像和FPS计算
+        # 显示图像
         if is_show_video:
             cv2.imshow("vision output", out_img)
             cv2.waitKey(1)
+
+        # FPS 统计
         cnt += 1
         if cnt == 20:
-            fps = 20 / (time.time() - time1)
+            current_fps = 20 / (time.time() - time1)
+            fps_history.append(current_fps)
+            if len(fps_history) > fps_history_maxlen:
+                fps_history.pop(0)
+
             time1 = time.time()
             cnt = 0
-            print("fps", fps)
+            print("fps", current_fps)
 
+            # 如果帧率过低，可以考虑调整一些参数
+            if len(fps_history) >= 5:
+                avg_fps = sum(fps_history) / len(fps_history)
+                if avg_fps < 10:  # 降低阈值到10FPS
+                    print(f"Warning: Low average FPS ({avg_fps:.1f}), prediction accuracy may be affected")
+
+        # 录制时长到达自动退出
         if 0 < save_video_time < time.time() - start_time:
-            video_writer.release()
+            if save_video_time > 0:
+                video_writer.release()
             cv2.destroyAllWindows()
             camera.delete()
             print("video write to", output_file, "over")
