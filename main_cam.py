@@ -118,9 +118,9 @@ def run():
     # 3) 四个角点 3D KalmanFilter（平移常速度），与 main_video 的角点 KF 思路一致
     corner_kfs = [None] * 4
     corner_kf_inited = [False] * 4
-    corner_kf_init_cov = 1e3
-    corner_kf_measure_noise = 0.05
-    corner_kf_process_noise = 0.2
+    corner_kf_init_cov = 1e2
+    corner_kf_measure_noise = 0.1
+    corner_kf_process_noise = 0.5
 
     # 录制视频（在线情况下可选）
     if save_video_time > 0:
