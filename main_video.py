@@ -33,7 +33,7 @@ main_video.py — 离线视频推理与可视化入口
 - yaw / pitch：
   - yaw：水平转动的角度（左右转头）；
   - pitch：竖直转动的角度（抬头/低头）。
-- EKF（扩展卡尔曼滤波）：在“有噪声”的观测下，对目标的状态（位置/速度/角度）做“预测+校正”，
+- EKF（���展卡尔曼滤波）：在“有噪声”的观测下，对目标的状态（位置/速度/角度）做“���测+校正”，
   用于平滑与在短暂丢失时继续给出较合理的估计。
 - 弹道补偿（ballistic compensation）：考虑子弹飞行时重力让它下坠，为了命中，需要把枪口稍微抬高一个角度。
 
@@ -64,6 +64,7 @@ from light_detector import LightDetector
 # from armor_chose import TargetSelector  # 目标选择：本测试不需要
 from pnp_solver import PnPSolver
 from KalmanFilter import KalmanFilter as KF  # 常速度卡尔曼滤波（仅保留这一种跟踪）
+from guardRobot import GuardRobot
 
 # CUDA 环境
 CUDA = bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
@@ -151,6 +152,10 @@ def run(video_path):
     # 像素坐标的一阶低通滤波系数（0~1，越小越平滑）
     pixel_smooth_alpha = 0.4
 
+    # 小车中心点的3D平滑系数（0~1，越小越平滑）
+    center_smooth_alpha = 0.3
+    center_cam_prev = None
+
     last_time = time.time()
 
     print("Start processing...")
@@ -182,6 +187,10 @@ def run(video_path):
             pts = np.array(armor_box.camera_pos).reshape(-1, 2)
             return float(np.mean(pts[:, 0]))
 
+        # 本帧中已成功完成 PnP 的装甲板（用于 GuardRobot 计算小车中心）
+        # 这里不再使用严格的 PnP 链路作为筛选条件，而是从成功走完 KF 更新的装甲板中挑选
+        guardrobot_candidates = []  # 存储 (detected_armor, area)
+
         # 2) 对每个检测到的装甲板：灯条提点 + PnP + 对应装甲板的 KF 更新
         for detected_armor_box in all_detect_armor:
             # 提取灯条四角点
@@ -194,10 +203,15 @@ def run(video_path):
             if not ret_pnp or armor_candidate is None:
                 continue
 
-            # 拿 4 个角点 3D（相机坐标系）
+            # 拿 4 个角点 3D（相机坐标系），并将其写回 ArmorPlate，供 GuardRobot 使用
             ret_pnp2, rvec2, tvec2, obj_pts_cam = pnp_solver.solve_pnp(detected_armor)
             if not ret_pnp2 or obj_pts_cam is None:
                 continue
+
+            # 记录这块装甲板可以作为 GuardRobot 候选（直接用3D四角点）
+            detected_armor.camera_pos = np.asarray(obj_pts_cam, dtype=np.float32)
+            armor_area = getattr(detected_armor_box, "area", 0.0)
+            guardrobot_candidates.append((detected_armor, armor_area))
 
             # 当前检测结果的中心x
             cur_center_x = get_center_x(detected_armor_box)
@@ -234,7 +248,7 @@ def run(video_path):
             corner_kfs = armor_state["kfs"]
             corner_kf_inited = armor_state["inited"]
 
-            # 原始 3D 角点：相机 -> 像素（仅用于内部，不再强调显示蓝色框）
+            # 原始 3D 角点：相机 -> 像素（仅用于内部��不再强调显示蓝色框）
             raw_pixels = []
             for p in obj_pts_cam:
                 u, v = camera2xy(p)
@@ -343,6 +357,76 @@ def run(video_path):
 
             aim_proj = camera2xy(gimbal2camera(aim_pos, 0))
             cv2.circle(out_img, aim_proj, 11, (0, 0, 255), 2)
+
+        # ====== 如果本帧至少有两块通过KF链路且有3D角点的装甲板，则用法向量直线最近点中点作为小车中心 ======
+        if len(guardrobot_candidates) >= 2:
+            try:
+                # 按面积从大到小排序，取前两块
+                guardrobot_candidates.sort(key=lambda x: x[1], reverse=True)
+                top_two_armors = [guardrobot_candidates[0][0], guardrobot_candidates[1][0]]
+
+                # 计算两块装甲板各自的3D中心（相机坐标系），仅用于调试输出
+                armor_centers = []
+                for armor in top_two_armors:
+                    pts = np.asarray(armor.camera_pos, dtype=float).reshape(-1, 3)
+                    center_i = pts.mean(axis=0)
+                    armor_centers.append(center_i)
+                c1, c2 = armor_centers
+
+                print(
+                    f"[Center-Normal] using two armors: areas=({guardrobot_candidates[0][1]:.3f}, {guardrobot_candidates[1][1]:.3f}), "
+                    f"centers=({c1[0]:.3f},{c1[1]:.3f},{c1[2]:.3f}) & ({c2[0]:.3f},{c2[1]:.3f},{c2[2]:.3f})"
+                )
+
+                # 使用 GuardRobot 计算两法向量直线最近连线中点作为小车中心
+                robot = GuardRobot(top_two_armors)
+                center_cam_raw = robot.get_center_from_normals()  # 相机坐标系 3D 点
+
+                print(
+                    f"[Center-Normal] center_cam_raw=({center_cam_raw[0]:.3f}, {center_cam_raw[1]:.3f}, {center_cam_raw[2]:.3f})"
+                )
+
+                # 3D 中心点平滑：一阶低通滤波
+                if center_cam_prev is None:
+                    center_cam_smooth = center_cam_raw
+                else:
+                    center_cam_smooth = (
+                        center_smooth_alpha * center_cam_raw +
+                        (1.0 - center_smooth_alpha) * center_cam_prev
+                    )
+                center_cam_prev = center_cam_smooth
+
+                # 简单保护：如果z<=0，说明中心点在相机后方或数值异常，本帧不画中心
+                if center_cam_smooth[2] <= 0:
+                    print("[Center-Normal] z<=0, skip drawing this frame, center_cam=", center_cam_smooth)
+                else:
+                    # 将 3D 中心点投影到像素平面
+                    u_c, v_c = camera2xy(center_cam_smooth)
+                    u_c = int(max(0, min(w - 1, u_c)))
+                    v_c = int(max(0, min(h - 1, v_c)))
+
+                    # 底层黑色粗十字与圆圈
+                    cv2.circle(out_img, (u_c, v_c), 18, (0, 0, 0), 4)
+                    cv2.line(out_img, (u_c - 22, v_c), (u_c + 22, v_c), (0, 0, 0), 3)
+                    cv2.line(out_img, (u_c, v_c - 22), (u_c, v_c + 22), (0, 0, 0), 3)
+
+                    # 上层黄色细十字与圆圈
+                    cv2.circle(out_img, (u_c, v_c), 16, (0, 255, 255), 2)
+                    cv2.circle(out_img, (u_c, v_c), 4, (0, 255, 255), -1)
+                    cv2.line(out_img, (u_c - 20, v_c), (u_c + 20, v_c), (0, 255, 255), 2)
+                    cv2.line(out_img, (u_c, v_c - 20), (u_c, v_c + 20), (0, 255, 255), 2)
+
+                    # 文本：黑底+黄字
+                    cv2.putText(out_img, "CAR CENTER", (u_c + 10, v_c - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
+                    cv2.putText(out_img, "CAR CENTER", (u_c + 10, v_c - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            except Exception as e:
+                print("Center-Normal compute error:", repr(e))
+        else:
+            # 调试：没有足够装甲板用于计算中心
+            if len(guardrobot_candidates) > 0:
+                print(f"[Center-Normal] only {len(guardrobot_candidates)} armor(s) usable for center this frame, need >=2")
 
         # ====== 装甲板消失：连续丢失若干帧后删除其对应的运动模型（KF） ======
         for armor_id, state in list(armor_kf_dict.items()):
