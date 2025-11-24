@@ -17,7 +17,7 @@ main_video.py — 离线视频推理与可视化入口
 坐标系与单位
 - 相机系：右手系，x 向右，y 向下，z 朝前；
 - 云台系���项目内使用 x 向右，y 向上，z 指向目标；
-- 角度：内部多为弧度，显示或日志中一般转成角度（°）。
+- ���度：内部多为弧度，显示或日志中一般转成角度（°）。
 
 依赖与约定
 - 关键参数在 setting.py 中集中配置（内参、畸变、平移向量、是否使用 YOLO 等）；
@@ -137,16 +137,24 @@ def run(video_path):
     light_pos = LightDetector()
     pnp_solver = PnPSolver()
 
-    # ========== 四个角点 3D KalmanFilter（仅平移常速度） ==========
-    corner_kfs = [None] * 4
-    corner_kf_inited = [False] * 4
+    # ========== 多装甲板 3D KalmanFilter 管理 ==========
+    # key: armor_id  ->  value: {"kfs": [KF*4], "inited": [bool*4], "miss_cnt": int, "center_x": float,
+    #                             "color": Color, "troop_type": TroopType,
+    #                             "smooth_pixels": list[tuple[int,int]] | None}
+    armor_kf_dict = {}
     corner_kf_init_cov = 1e3
-    corner_kf_measure_noise = 0.05
+    # 测量噪声稍大一些，让KF对单帧抖动更不敏感
+    corner_kf_measure_noise = 0.15
     corner_kf_process_noise = 0.2
+    # 连续丢失多少帧才真正认为装甲板消失
+    max_miss_frames = 8
+    # 像素坐标的一阶低通滤波系数（0~1，越小越平滑）
+    pixel_smooth_alpha = 0.4
 
     last_time = time.time()
 
     print("Start processing...")
+
     while True:
         ret, orig_frame = cap.read()
         if not ret:
@@ -166,55 +174,79 @@ def run(video_path):
         # 1) YOLO 检测
         all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
 
-        # 2) 灯条提点 + PnP，取面积最大的装甲作为量测
-        corner_meas_cam = None  # 相机坐标系下 4 角点
-        candidates = []
+        # 记录本帧检测到的装甲板中心x，后面用于和已有KF做简单位置匹配
+        h, w = out_img.shape[:2]
+
+        def get_center_x(armor_box):
+            # armor_box.camera_pos 是 xyxy 或四点，当前这里按xyxy处理
+            pts = np.array(armor_box.camera_pos).reshape(-1, 2)
+            return float(np.mean(pts[:, 0]))
+
+        # 2) 对每个检测到的装甲板：灯条提点 + PnP + 对应装甲板的 KF 更新
         for detected_armor_box in all_detect_armor:
+            # 提取灯条四角点
             ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box, out_img)
             if not ret_detected:
                 continue
+
             # 中心点 PnP 及云台坐标
             ret_pnp, armor_candidate, out_img = pnp_solver.get_armor_target(detected_armor, out_img, 0, 0)
             if not ret_pnp or armor_candidate is None:
                 continue
+
             # 拿 4 个角点 3D（相机坐标系）
             ret_pnp2, rvec2, tvec2, obj_pts_cam = pnp_solver.solve_pnp(detected_armor)
             if not ret_pnp2 or obj_pts_cam is None:
                 continue
-            candidates.append((armor_candidate, obj_pts_cam))
 
-        if candidates:
-            # 选面积最大的装甲板
-            best_armor, best_obj_pts_cam = max(
-                candidates,
-                key=lambda item: getattr(item[0], 'area', 0.0)
-            )
-            corner_meas_cam = best_obj_pts_cam
+            # 当前检测结果的中心x
+            cur_center_x = get_center_x(detected_armor_box)
 
-        # 3) 角点 3D KF + 原始/滤波后矩形绘制 + 由角点中心进行射击预测
-        if corner_meas_cam is not None:
-            # 顺序约定：LightDetector 输出为 [top_left, bottom_left, top_right, bottom_right]
-            # PnPSolver.solve_pnp 使用 detected_armor.camera_pos 作为 2D 输入，故此顺序保持一致
+            # ====== 基于中心x的简单匹配：为该观测找到最接近的已有装甲板KF ======
+            matched_id = None
+            min_dx = 1e9
+            for armor_id, state in armor_kf_dict.items():
+                if state.get("color") != detected_armor_box.color or state.get("troop_type") != detected_armor_box.troop_type:
+                    continue
+                dx = abs(state["center_x"] - cur_center_x)
+                if dx < min_dx and dx < 80:  # 只在x距离较近时认为可能是同一块装甲板
+                    min_dx = dx
+                    matched_id = armor_id
 
-            # 原始 3D 角点：相机 -> 像素
-            h, w = out_img.shape[:2]
+            if matched_id is None:
+                # 没找到合适的旧KF，为这块装甲板新建一个ID
+                armor_id = len(armor_kf_dict)  # 简单自增ID
+                armor_kf_dict[armor_id] = {
+                    "kfs": [None] * 4,
+                    "inited": [False] * 4,
+                    "miss_cnt": 0,
+                    "center_x": cur_center_x,
+                    "color": detected_armor_box.color,
+                    "troop_type": detected_armor_box.troop_type,
+                    "smooth_pixels": None,
+                }
+            else:
+                armor_id = matched_id
+                armor_kf_dict[armor_id]["center_x"] = cur_center_x
+                armor_kf_dict[armor_id]["miss_cnt"] = 0  # 这帧看到了，丢失计数清零
+
+            armor_state = armor_kf_dict[armor_id]
+            corner_kfs = armor_state["kfs"]
+            corner_kf_inited = armor_state["inited"]
+
+            # 原始 3D 角点：相机 -> 像素（仅用于内部，不再强调显示蓝色框）
             raw_pixels = []
-            for p in corner_meas_cam:
+            for p in obj_pts_cam:
                 u, v = camera2xy(p)
                 u = int(max(0, min(w - 1, u)))
                 v = int(max(0, min(h - 1, v)))
                 raw_pixels.append((u, v))
 
-            # 画原始矩形（蓝色）：top_left -> bottom_left -> bottom_right -> top_right
-            tl, bl, tr, br = raw_pixels
-            raw_rect = np.array([tl, bl, br, tr], dtype=np.int32).reshape(-1, 1, 2)
-            cv2.polylines(out_img, [raw_rect], isClosed=True, color=(255, 0, 0), thickness=2)
-            # 原始矩形对角线
-            cv2.line(out_img, tl, br, (255, 0, 0), 1)
-            cv2.line(out_img, bl, tr, (255, 0, 0), 1)
+            if len(raw_pixels) != 4:
+                continue
 
             # 角点量测：相机 -> 云台
-            corner_meas_gimbal = [camera2gimbal(p, 0) for p in corner_meas_cam]
+            corner_meas_gimbal = [camera2gimbal(p, 0) for p in obj_pts_cam]
 
             filtered_gimbal = []   # 每个角点滤波后的 3D 位置
             filtered_vel = []      # 每个角点滤波后的 3D 速度
@@ -224,6 +256,7 @@ def run(video_path):
                 px, py, pz = map(float, corner_meas_gimbal[idx])
 
                 if not corner_kf_inited[idx]:
+                    # 首次看到该角点时初始化 KF
                     kf_point = KF(
                         init_cov=corner_kf_init_cov,
                         measure_noise=corner_kf_measure_noise,
@@ -252,60 +285,53 @@ def run(video_path):
                 v_f = int(max(0, min(h - 1, v_f)))
                 filtered_pixels.append((u_f, v_f))
 
-            # 画滤波后矩形（绿色），仍然按 tl, bl, br, tr 顺序，避免“8字形”
-            tl_f, bl_f, tr_f, br_f = filtered_pixels
+            # ====== 对像素坐标再做一次一阶低通滤波，进一步平滑显示 ======
+            if armor_state["smooth_pixels"] is None:
+                armor_state["smooth_pixels"] = filtered_pixels.copy()
+            else:
+                smooth_list = []
+                for (u_new, v_new), (u_old, v_old) in zip(filtered_pixels, armor_state["smooth_pixels"]):
+                    u_s = int(pixel_smooth_alpha * u_new + (1 - pixel_smooth_alpha) * u_old)
+                    v_s = int(pixel_smooth_alpha * v_new + (1 - pixel_smooth_alpha) * v_old)
+                    smooth_list.append((u_s, v_s))
+                armor_state["smooth_pixels"] = smooth_list
+
+            tl_f, bl_f, tr_f, br_f = armor_state["smooth_pixels"]
             filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
             cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
-            # 滤波后矩形对角线
             cv2.line(out_img, tl_f, br_f, (0, 255, 0), 1)
             cv2.line(out_img, bl_f, tr_f, (0, 255, 0), 1)
 
             # 计算四边形的角度和边长并显示在图像上
-            # 定义四个点的顺序: tl_f, bl_f, br_f, tr_f
             points = [tl_f, bl_f, br_f, tr_f]
-            
-            # 计算每条边的长度
             edges = []
             for i in range(4):
                 p1 = np.array(points[i])
                 p2 = np.array(points[(i + 1) % 4])
                 length = np.linalg.norm(p1 - p2)
                 edges.append(length)
-            
-            # 计算每个角的角度
             angles = []
             for i in range(4):
                 prev_point = np.array(points[(i - 1) % 4])
                 curr_point = np.array(points[i])
                 next_point = np.array(points[(i + 1) % 4])
-                
-                # 计算两条边的向量
                 vec1 = prev_point - curr_point
                 vec2 = next_point - curr_point
-                
-                # 计算夹角
                 cos_angle = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
-                # 限制cos值在[-1, 1]范围内，防止数值误差
                 cos_angle = np.clip(cos_angle, -1, 1)
                 angle = np.degrees(np.arccos(cos_angle))
                 angles.append(angle)
-            
-            # 将边长和角度信息显示在图像上
-            # 显示边长（在每条边的中点附近）
             for i in range(4):
                 p1 = np.array(points[i])
                 p2 = np.array(points[(i + 1) % 4])
                 midpoint = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2)
                 cv2.putText(out_img, f"{edges[i]:.1f}", midpoint, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-            
-            # 显示角度（在每个顶点附近）
             for i in range(4):
                 point = points[i]
-                # 稍微偏移文本位置以避免与点重叠
                 text_pos = (point[0] + 5, point[1] + 5)
                 cv2.putText(out_img, f"{angles[i]:.1f}°", text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-            # 由 4 个角点状态求中心位置和速度（即中心是角点 KF 的结果，不是单独 KF）
+            # 由 4 个角点状态求中心位置和速度（该装甲板）
             center_pos = np.mean(np.vstack(filtered_gimbal), axis=0)
             center_vel = np.mean(np.vstack(filtered_vel), axis=0)
 
@@ -317,6 +343,21 @@ def run(video_path):
 
             aim_proj = camera2xy(gimbal2camera(aim_pos, 0))
             cv2.circle(out_img, aim_proj, 11, (0, 0, 255), 2)
+
+        # ====== 装甲板消失：连续丢失若干帧后删除其对应的运动模型（KF） ======
+        for armor_id, state in list(armor_kf_dict.items()):
+            # 如果这一帧没有被匹配更新，则视为丢失一帧
+            if state.get("miss_cnt", 0) is not None:  # 已有miss_cnt字段
+                if state["center_x"] < -1e8:  # 预留特殊标志，当前不使用
+                    continue
+            # miss_cnt 在匹配时已被清零，这里统一累加丢失帧
+            if state.get("updated", False):
+                state["updated"] = False
+            else:
+                state["miss_cnt"] = state.get("miss_cnt", 0) + 1
+
+            if state["miss_cnt"] > max_miss_frames:
+                del armor_kf_dict[armor_id]
 
         # 写出与显示
         video_writer.write(out_img)

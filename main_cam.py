@@ -118,9 +118,9 @@ def run():
     # 3) 四个角点 3D KalmanFilter（平移常速度），与 main_video 的角点 KF 思路一致
     corner_kfs = [None] * 4
     corner_kf_inited = [False] * 4
-    corner_kf_init_cov = 1e2
-    corner_kf_measure_noise = 0.1
-    corner_kf_process_noise = 0.5
+    corner_kf_init_cov = 1e1
+    corner_kf_measure_noise = 0.2
+    corner_kf_process_noise = 1.0
 
     # 录制视频（在线情况下可选）
     if save_video_time > 0:
@@ -152,7 +152,7 @@ def run():
 
         # dt 供 KF 使用（与 main_video 一致裁剪）
         now = time.time()
-        dt = float(np.clip(now - last_time, 1e-3, 0.2))
+        dt = float(np.clip(now - last_time, 1e-6, 0.2))
         last_time = now
 
         # 1) 检测
@@ -231,13 +231,15 @@ def run():
                         vx=0.0, vy=0.0, vz=0.0,
                     )
                     # 在线场景使用一个名义 FPS 初始化
-                    kf_point.init_kf(dt=1.0 / 30.0)
+                    kf_point.init_kf(dt=dt)
                     corner_kfs[idx] = kf_point
                     corner_kf_inited[idx] = True
 
                 kf_point = corner_kfs[idx]
-                kf_point.build_F_Q(dt)
-                kf_point.predict_next(dt)
+                # 只在有显著运动时才进行预测更新，减少计算负担
+                if dt > 1e-6:  
+                    kf_point.build_F_Q(dt)
+                    kf_point.predict_next(dt)
                 kf_point.correct_by_sensor([px, py, pz])
 
                 state_post, _P = kf_point.get_state()
