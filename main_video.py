@@ -311,7 +311,7 @@ def run(video_path):
                 armor_state["smooth_pixels"] = smooth_list
 
             tl_f, bl_f, tr_f, br_f = armor_state["smooth_pixels"]
-            filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
+            filt_rect = np.array([tl_f, bl_f, tr_f, br_f], dtype=np.int32).reshape(-1, 1, 2)
             cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
             cv2.line(out_img, tl_f, br_f, (0, 255, 0), 1)
             cv2.line(out_img, bl_f, tr_f, (0, 255, 0), 1)
@@ -378,9 +378,12 @@ def run(video_path):
                     f"centers=({c1[0]:.3f},{c1[1]:.3f},{c1[2]:.3f}) & ({c2[0]:.3f},{c2[1]:.3f},{c2[2]:.3f})"
                 )
 
-                # 使用 GuardRobot 计算两法向量直线最近连线中点作为小车中心
+                # 使用 GuardRobot 计算两法向量直线最近连线中点作为小车中心，并推算对面装甲板
                 robot = GuardRobot(top_two_armors)
                 center_cam_raw = robot.get_center_from_normals()  # 相机坐标系 3D 点
+
+                # 基于当前两块装甲推算对面两块装甲，并追加到 robot.armor_plate
+                robot.calculate_another_armor_by_center()
 
                 print(
                     f"[Center-Normal] center_cam_raw=({center_cam_raw[0]:.3f}, {center_cam_raw[1]:.3f}, {center_cam_raw[2]:.3f})"
@@ -421,6 +424,32 @@ def run(video_path):
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
                     cv2.putText(out_img, "CAR CENTER", (u_c + 10, v_c - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+                # ====== 画出由 GuardRobot 推算得到的对面装甲板（两块） ======
+                # robot.armor_plate 现在包含原始两块 + 新推算两块
+                if len(robot.armor_plate) >= 4:
+                    inferred_armors = robot.armor_plate[2:4]
+                    for inf_armor in inferred_armors:
+                        pts3d = np.asarray(inf_armor.camera_pos, dtype=float).reshape(-1, 3)
+                        if pts3d.shape[0] != 4:
+                            continue
+
+                        # 将四个3D角点投影到图像平面
+                        pts2d = [camera2xy(p) for p in pts3d]
+                        pts2d = [
+                            (int(max(0, min(w - 1, u))), int(max(0, min(h - 1, v))))
+                            for (u, v) in pts2d
+                        ]
+
+                        # 按 [top_left, bottom_left, top_right, bottom_right] 顺序解析
+                        tl_i, bl_i, tr_i, br_i = pts2d
+
+                        # 画出与真实装甲板相同样式的多边形和对角线，但使用黄色
+                        poly = np.array([tl_i, bl_i, br_i, tr_i], dtype=np.int32).reshape(-1, 1, 2)
+                        cv2.polylines(out_img, [poly], isClosed=True, color=(0, 255, 255), thickness=2)
+                        cv2.line(out_img, tl_i, br_i, (0, 255, 255), 1)
+                        cv2.line(out_img, bl_i, tr_i, (0, 255, 255), 1)
+
             except Exception as e:
                 print("Center-Normal compute error:", repr(e))
         else:

@@ -1,11 +1,13 @@
 from typing import List
 import numpy as np
 
+from all_type import ArmorPlate, small_armor_size, big_armor_size
+
 
 class GuardRobot:
     def __init__(self, all_armor_plate: List):
         """根据若干装甲板估计小车相关几何信息（相机坐标系）。
-
+        all_armor_plate: 装甲板列表，类型为 List[ArmorPlate]。
         约定：至少提供 2 块装甲板即可；内部主要使用前两块装甲板。
         """
         assert len(all_armor_plate) >= 2, "all_armor_plate 至少需要 2 块装甲板"
@@ -190,3 +192,89 @@ class GuardRobot:
         z_mean = 0.5 * (self.armor_plate_center[0][2] + self.armor_plate_center[1][2])
         self.center_point = np.array([x, y, z_mean], dtype=float)
         return self.center_point
+
+    def _reconstruct_corners_from_center(self, center: np.ndarray, armor: ArmorPlate) -> np.ndarray:
+        """根据原装甲板的四角点推导平面内宽/高方向和尺寸, 在给定中心处重建四个3D角点.
+
+        保证:
+        - 对面装甲板在相机坐标系中的“横向/竖向”方向与原装甲板一致;
+        - 宽高尺寸与当前观测到的装甲板一致(而不是完全依赖配置尺寸), 降低比例误差对视觉的影响。
+
+        四个点顺序: [top_left, bottom_left, top_right, bottom_right]
+        """
+        center = np.asarray(center, dtype=float).reshape(3)
+        pts = np.asarray(armor.camera_pos, dtype=float).reshape(-1, 3)
+        if pts.shape[0] != 4:
+            raise ValueError("ArmorPlate.camera_pos 必须是4个3D角点")
+
+        # 按约定顺序: [top_left, bottom_left, top_right, bottom_right]
+        top_left = pts[0]
+        bottom_left = pts[1]
+        top_right = pts[2]
+        # bottom_right = pts[3]
+
+        # 高度方向: top_left -> bottom_left
+        v_height = bottom_left - top_left
+        # 宽度方向: top_left -> top_right
+        v_width = top_right - top_left
+
+        h_norm = np.linalg.norm(v_height)
+        w_norm = np.linalg.norm(v_width)
+        if h_norm < 1e-6 or w_norm < 1e-6:
+            raise ValueError("装甲板边长异常, 无法重建对面装甲板角点")
+
+        v_dir = v_height / h_norm   # 高度方向单位向量
+        u_dir = v_width / w_norm    # 宽度方向单位向量
+
+        half_w = w_norm / 2.0
+        half_h = h_norm / 2.0
+
+        tl = center - half_w * u_dir - half_h * v_dir
+        bl = center - half_w * u_dir + half_h * v_dir
+        tr = center + half_w * u_dir - half_h * v_dir
+        br = center + half_w * u_dir + half_h * v_dir
+
+        return np.vstack([tl, bl, tr, br]).astype(np.float32)
+
+    def calculate_another_armor_by_center(self):
+        """
+        基于已知小车中心点, 为每块已知装甲板估计一个“对面装甲板”的中心, 然后使用
+        原装甲板的平面内宽/高方向和尺寸在该中心处重建四个3D角点, 最终 append 到 self.armor_plate 中。
+
+        复用:
+        - get_center_from_normals(): 计算小车中心 self.center_point
+        - find_armor_center(): 计算每块装甲板中心 self.armor_plate_center
+        - 原装甲板 camera_pos 中的四角点, 用于确定宽/高方向与尺寸
+        """
+        # 1. 计算车中心与每块装甲板中心
+        center_cam = self.get_center_from_normals()  # 更新 self.center_point
+        self.find_armor_center()                     # 更新 self.armor_plate_center
+
+        new_armors = []
+
+        for armor, C in zip(self.armor_plate, self.armor_plate_center):
+            C = np.asarray(C, dtype=np.float32).reshape(3)
+            C_car = np.asarray(center_cam, dtype=np.float32).reshape(3)
+
+            # 2. 对面装甲板中心: 关于车中心对称
+            #    C_opposite = 2*C_car - C
+            opposite_center = 2.0 * C_car - C
+
+            # 3. 利用原装甲板形状(宽/高方向和长度)在对面中心重建四角点
+            opposite_pts = self._reconstruct_corners_from_center(
+                center=opposite_center,
+                armor=armor,
+            )
+
+            # 4. 构造新的 ArmorPlate
+            new_armor = ArmorPlate(
+                points=opposite_pts,
+                color=armor.color,
+                troop_type=armor.troop_type,
+                area=armor.area,
+                confident=armor.confident,
+            )
+            new_armors.append(new_armor)
+
+        # 5. 统一追加, 避免遍历时修改列表
+        self.armor_plate.extend(new_armors)
