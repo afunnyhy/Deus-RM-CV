@@ -15,7 +15,7 @@ main_video.py — 离线视频推理与可视化入口
 - 输出：在项目根目录生成同名 *_output.mp4 视频；命令行打印 FPS；可选显示窗口（is_show_video）。
 
 坐标系与单位
-- 相机系：右手系，x 向右，y 向下，z 朝前；
+- 相机系：右手系，x 向右，y 向下，z 朝���；
 - 云台系���项目内使用 x 向右，y 向上，z 指向目标；
 - ���度：内部多为弧度，显示或日志中一般转成角度（°）。
 
@@ -63,7 +63,7 @@ from detect_armor import ArmorDetector  # 强制使用 YOLO 检测
 from light_detector import LightDetector
 # from armor_chose import TargetSelector  # 目标选择：本测试不需要
 from pnp_solver import PnPSolver
-from KalmanFilter import KalmanFilter as KF  # 常速度卡尔曼滤波（仅保留这一种跟踪）
+# from KalmanFilter import KalmanFilter as KF  # 常速度卡尔曼滤波（先整体注释掉以简化流程）
 from guardRobot import GuardRobot
 
 # CUDA 环境
@@ -99,7 +99,7 @@ def write1(x, y, z):
 
 
 def run(video_path):
-    """离线视频主流程：检测 -> 角点提取 -> PnP -> 角点 3D KF -> 中心点用于射击预测。"""
+    """离线视频主流程：检测 -> 角点提取 -> PnP -> 可视化（暂时关闭卡尔曼滤波）。"""
     # 颜色推断（保持原逻辑）
     test_color = Color.RED
     if video_path.find("red") != -1:
@@ -138,19 +138,19 @@ def run(video_path):
     light_pos = LightDetector()
     pnp_solver = PnPSolver()
 
-    # ========== 多装甲板 3D KalmanFilter 管理 ==========
+    # ========== 多装甲板 3D KalmanFilter 管理 (暂时禁用) ==========
     # key: armor_id  ->  value: {"kfs": [KF*4], "inited": [bool*4], "miss_cnt": int, "center_x": float,
     #                             "color": Color, "troop_type": TroopType,
     #                             "smooth_pixels": list[tuple[int,int]] | None}
-    armor_kf_dict = {}
-    corner_kf_init_cov = 1e3
-    # 测量噪声稍大一些，让KF对单帧抖动更不敏感
-    corner_kf_measure_noise = 0.15
-    corner_kf_process_noise = 0.2
-    # 连续丢失多少帧才真正认为装甲板消失
-    max_miss_frames = 8
-    # 像素坐标的一阶低通滤波系数（0~1，越小越平滑）
-    pixel_smooth_alpha = 0.4
+    # armor_kf_dict = {}
+    # corner_kf_init_cov = 1e3
+    # # 测量噪声稍大一些，让KF对单帧抖动更不敏感
+    # corner_kf_measure_noise = 0.15
+    # corner_kf_process_noise = 0.2
+    # # 连续丢失多少帧才真正认为装甲板消失
+    # max_miss_frames = 8
+    # # 像素坐标的一阶低通滤波系数（0~1，越小越平滑）
+    # pixel_smooth_alpha = 0.4
 
     # 小车中心点的3D平滑系数（0~1，越小越平滑）
     center_smooth_alpha = 0.3
@@ -188,10 +188,9 @@ def run(video_path):
             return float(np.mean(pts[:, 0]))
 
         # 本帧中已成功完成 PnP 的装甲板（用于 GuardRobot 计算小车中心）
-        # 这里不再使用严格的 PnP 链路作为筛选条件，而是从成功走完 KF 更新的装甲板中挑选
         guardrobot_candidates = []  # 存储 (detected_armor, area)
 
-        # 2) 对每个检测到的装甲板：灯条提点 + PnP + 对应装甲板的 KF 更新
+        # 2) 对每个检测到的装甲板：灯条提点 + PnP （暂不进行 KF 预测/平滑）
         for detected_armor_box in all_detect_armor:
             # 提取灯条四角点
             ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box, out_img)
@@ -213,150 +212,22 @@ def run(video_path):
             armor_area = getattr(detected_armor_box, "area", 0.0)
             guardrobot_candidates.append((detected_armor, armor_area))
 
-            # 当前检测结果的中心x
-            cur_center_x = get_center_x(detected_armor_box)
+            # ===== 原本这里有基于角点 3D 的 KalmanFilter 更新和像素平滑，现全部注释掉 =====
+            # 当前版本只做几何可视化和中心点估计，不做时域滤波
 
-            # ====== 基于中心x的简单匹配：为该观测找到最接近的已有装甲板KF ======
-            matched_id = None
-            min_dx = 1e9
-            for armor_id, state in armor_kf_dict.items():
-                if state.get("color") != detected_armor_box.color or state.get("troop_type") != detected_armor_box.troop_type:
-                    continue
-                dx = abs(state["center_x"] - cur_center_x)
-                if dx < min_dx and dx < 80:  # 只在x距离较近时认为可能是同一块装甲板
-                    min_dx = dx
-                    matched_id = armor_id
-
-            if matched_id is None:
-                # 没找到合适的旧KF，为这块装甲板新建一个ID
-                armor_id = len(armor_kf_dict)  # 简单自增ID
-                armor_kf_dict[armor_id] = {
-                    "kfs": [None] * 4,
-                    "inited": [False] * 4,
-                    "miss_cnt": 0,
-                    "center_x": cur_center_x,
-                    "color": detected_armor_box.color,
-                    "troop_type": detected_armor_box.troop_type,
-                    "smooth_pixels": None,
-                }
-            else:
-                armor_id = matched_id
-                armor_kf_dict[armor_id]["center_x"] = cur_center_x
-                armor_kf_dict[armor_id]["miss_cnt"] = 0  # 这帧看到了，丢失计数清零
-
-            armor_state = armor_kf_dict[armor_id]
-            corner_kfs = armor_state["kfs"]
-            corner_kf_inited = armor_state["inited"]
-
-            # 原始 3D 角点：相机 -> 像素（仅用于内部��不再强调显示蓝色框）
+            # 可选：直接画 PnP 得到的 4 个角点轮廓（未经 KF 平滑）
+            h, w = out_img.shape[:2]
             raw_pixels = []
             for p in obj_pts_cam:
                 u, v = camera2xy(p)
                 u = int(max(0, min(w - 1, u)))
                 v = int(max(0, min(h - 1, v)))
                 raw_pixels.append((u, v))
-
             if len(raw_pixels) != 4:
                 continue
-
-            # 角点量测：相机 -> 云台
-            corner_meas_gimbal = [camera2gimbal(p, 0) for p in obj_pts_cam]
-
-            filtered_gimbal = []   # 每个角点滤波后的 3D 位置
-            filtered_vel = []      # 每个角点滤波后的 3D 速度
-            filtered_pixels = []   # 每个角点滤波后的像素坐标
-
-            for idx in range(4):
-                px, py, pz = map(float, corner_meas_gimbal[idx])
-
-                if not corner_kf_inited[idx]:
-                    # 首次看到该角点时初始化 KF
-                    kf_point = KF(
-                        init_cov=corner_kf_init_cov,
-                        measure_noise=corner_kf_measure_noise,
-                        process_noise=corner_kf_process_noise,
-                        x=px, y=py, z=pz,
-                        vx=0.0, vy=0.0, vz=0.0
-                    )
-                    kf_point.init_kf(dt=1.0 / fps if fps > 1e-6 else 1e-2)
-                    corner_kfs[idx] = kf_point
-                    corner_kf_inited[idx] = True
-
-                kf_point = corner_kfs[idx]
-                # 使用当前 dt 更新 F/Q、预测和校正（仅平移量测）
-                kf_point.build_F_Q(dt)
-                kf_point.predict_next(dt)
-                kf_point.correct_by_sensor([px, py, pz])
-
-                state_post, _P = kf_point.get_state()
-                pos_post = state_post[:3].reshape(-1)
-                vel_post = state_post[3:].reshape(-1)
-                filtered_gimbal.append(pos_post)
-                filtered_vel.append(vel_post)
-
-                u_f, v_f = camera2xy(gimbal2camera(pos_post, 0))
-                u_f = int(max(0, min(w - 1, u_f)))
-                v_f = int(max(0, min(h - 1, v_f)))
-                filtered_pixels.append((u_f, v_f))
-
-            # ====== 对像素坐标再做一次一阶低通滤波，进一步平滑显示 ======
-            if armor_state["smooth_pixels"] is None:
-                armor_state["smooth_pixels"] = filtered_pixels.copy()
-            else:
-                smooth_list = []
-                for (u_new, v_new), (u_old, v_old) in zip(filtered_pixels, armor_state["smooth_pixels"]):
-                    u_s = int(pixel_smooth_alpha * u_new + (1 - pixel_smooth_alpha) * u_old)
-                    v_s = int(pixel_smooth_alpha * v_new + (1 - pixel_smooth_alpha) * v_old)
-                    smooth_list.append((u_s, v_s))
-                armor_state["smooth_pixels"] = smooth_list
-
-            tl_f, bl_f, tr_f, br_f = armor_state["smooth_pixels"]
+            tl_f, bl_f, tr_f, br_f = raw_pixels
             filt_rect = np.array([tl_f, bl_f, tr_f, br_f], dtype=np.int32).reshape(-1, 1, 2)
             cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
-            cv2.line(out_img, tl_f, br_f, (0, 255, 0), 1)
-            cv2.line(out_img, bl_f, tr_f, (0, 255, 0), 1)
-
-            # 计算四边形的角度和边长并显示在图像上
-            points = [tl_f, bl_f, br_f, tr_f]
-            edges = []
-            for i in range(4):
-                p1 = np.array(points[i])
-                p2 = np.array(points[(i + 1) % 4])
-                length = np.linalg.norm(p1 - p2)
-                edges.append(length)
-            angles = []
-            for i in range(4):
-                prev_point = np.array(points[(i - 1) % 4])
-                curr_point = np.array(points[i])
-                next_point = np.array(points[(i + 1) % 4])
-                vec1 = prev_point - curr_point
-                vec2 = next_point - curr_point
-                cos_angle = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
-                cos_angle = np.clip(cos_angle, -1, 1)
-                angle = np.degrees(np.arccos(cos_angle))
-                angles.append(angle)
-            for i in range(4):
-                p1 = np.array(points[i])
-                p2 = np.array(points[(i + 1) % 4])
-                midpoint = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2)
-                cv2.putText(out_img, f"{edges[i]:.1f}", midpoint, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-            for i in range(4):
-                point = points[i]
-                text_pos = (point[0] + 5, point[1] + 5)
-                cv2.putText(out_img, f"{angles[i]:.1f}°", text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-
-            # 由 4 个角点状态求中心位置和速度（该装甲板）
-            center_pos = np.mean(np.vstack(filtered_gimbal), axis=0)
-            center_vel = np.mean(np.vstack(filtered_vel), axis=0)
-
-            # 用中心位置和速度做射击预测
-            bullet_speed = defaults_bullet_speed if 'defaults_bullet_speed' in globals() else 25.0
-            distance = float(np.linalg.norm(center_pos))
-            bullet_time = distance / bullet_speed if bullet_speed > 1e-6 else 0.0
-            aim_pos = center_pos + center_vel * bullet_time
-
-            aim_proj = camera2xy(gimbal2camera(aim_pos, 0))
-            cv2.circle(out_img, aim_proj, 11, (0, 0, 255), 2)
 
         # ====== 如果本帧至少有两块通过KF链路且有3D角点的装甲板，则用法向量直线最近点中点作为小车中心 ======
         if len(guardrobot_candidates) >= 2:
@@ -378,18 +249,61 @@ def run(video_path):
                     f"centers=({c1[0]:.3f},{c1[1]:.3f},{c1[2]:.3f}) & ({c2[0]:.3f},{c2[1]:.3f},{c2[2]:.3f})"
                 )
 
-                # 使用 GuardRobot 计算两法向量直线最近连线中点作为小车中心，并推算对面装甲板
+                # 使用 GuardRobot 计算两法向量在 xz 平面投影直线的交点作为二维小车中心
                 robot = GuardRobot(top_two_armors)
-                center_cam_raw = robot.get_center_from_normals()  # 相机坐标系 3D 点
+                center_xz = robot.get_center_from_normals()  # 相机坐标系二维点 [x, z]
+
+                # 为每块装甲板构造各自对应的 3D 中心点：[center_x, armor_y, center_z]
+                per_armor_centers = []
+                for armor_center in armor_centers:
+                    y_i = float(armor_center[1])
+                    center_i_3d = np.array([
+                        float(center_xz[0]),
+                        y_i,
+                        float(center_xz[1])
+                    ], dtype=float)
+                    per_armor_centers.append(center_i_3d)
+
+                # 输出每块装甲板对应的车中心（两个中心都体现出来）
+                print("[Center-Normal] per-armor centers:")
+                for idx_c, c_cam in enumerate(per_armor_centers):
+                    print(
+                        f"  armor #{idx_c} center_cam=({c_cam[0]:.3f}, {c_cam[1]:.3f}, {c_cam[2]:.3f})"
+                    )
+
+                # 使用面积更大的第一块装甲板对应的中心点作为整体车中心的原始值，用于时间平滑
+                center_cam_raw = per_armor_centers[0]
 
                 # 基于当前两块装甲推算对面两块装甲，并追加到 robot.armor_plate
                 robot.calculate_another_armor_by_center()
+
+                # 运行时调试：在 main_video 中打印由 GuardRobot 预测得到的对面装甲板的四个点坐标和面积
+                inferred_armors = []
+                if len(robot.armor_plate) >= 4:
+                    inferred_armors = robot.armor_plate[2:4]
+                    for idx_inf, inf_armor in enumerate(inferred_armors):
+                        try:
+                            area_inf = float(getattr(inf_armor, "area", 0.0))
+                            print(f"[PredArmor-main] new armor #{idx_inf}: area={area_inf:.3f}")
+                        except Exception:
+                            print(f"[PredArmor-main] new armor #{idx_inf}: area=<unknown>")
+                        pts3d_inf = np.asarray(inf_armor.camera_pos, dtype=float).reshape(-1, 3)
+                        # 打印四个3D角点
+                        for j, pt in enumerate(pts3d_inf):
+                            x, y, z = pt
+                            print(f"[PredArmor-main] new armor #{idx_inf} pt{j}: ({x:.3f}, {y:.3f}, {z:.3f})")
+                        # 额外打印对面装甲板的3D中心点
+                        center_inf = pts3d_inf.mean(axis=0)
+                        print(
+                            f"[PredArmor-main] new armor #{idx_inf} center: ("
+                            f"{center_inf[0]:.3f}, {center_inf[1]:.3f}, {center_inf[2]:.3f})"
+                        )
 
                 print(
                     f"[Center-Normal] center_cam_raw=({center_cam_raw[0]:.3f}, {center_cam_raw[1]:.3f}, {center_cam_raw[2]:.3f})"
                 )
 
-                # 3D 中心点平滑：一阶低通滤波
+                # 3D 中心点平滑：一阶低通滤波，仅对整体车中心进行
                 if center_cam_prev is None:
                     center_cam_smooth = center_cam_raw
                 else:
@@ -403,74 +317,97 @@ def run(video_path):
                 if center_cam_smooth[2] <= 0:
                     print("[Center-Normal] z<=0, skip drawing this frame, center_cam=", center_cam_smooth)
                 else:
-                    # 将 3D 中心点投影到像素平面
-                    u_c, v_c = camera2xy(center_cam_smooth)
-                    u_c = int(max(0, min(w - 1, u_c)))
-                    v_c = int(max(0, min(h - 1, v_c)))
+                    # 将两个 3D 中心点和整体平滑中心投影到像素平面，并在图像上分别绘制
+                    centers_to_draw = list(per_armor_centers)
+                    centers_to_draw.append(center_cam_smooth)
 
-                    # 底层黑色粗十字与圆圈
-                    cv2.circle(out_img, (u_c, v_c), 18, (0, 0, 0), 4)
-                    cv2.line(out_img, (u_c - 22, v_c), (u_c + 22, v_c), (0, 0, 0), 3)
-                    cv2.line(out_img, (u_c, v_c - 22), (u_c, v_c + 22), (0, 0, 0), 3)
+                    for idx_draw, c_cam_draw in enumerate(centers_to_draw):
+                        u_c, v_c = camera2xy(c_cam_draw)
+                        u_c = int(max(0, min(w - 1, u_c)))
+                        v_c = int(max(0, min(h - 1, v_c)))
 
-                    # 上层黄色细十字与圆圈
-                    cv2.circle(out_img, (u_c, v_c), 16, (0, 255, 255), 2)
-                    cv2.circle(out_img, (u_c, v_c), 4, (0, 255, 255), -1)
-                    cv2.line(out_img, (u_c - 20, v_c), (u_c + 20, v_c), (0, 255, 255), 2)
-                    cv2.line(out_img, (u_c, v_c - 20), (u_c, v_c + 20), (0, 255, 255), 2)
+                        if idx_draw < 2:
+                            # 两块装甲板各自对应的中心：使用黄色小十字
+                            color_outer = (0, 0, 0)
+                            color_inner = (255, 255, 0)
+                            radius_outer = 14
+                            radius_inner = 10
+                            line_len = 16
+                            label = f"CENTER#{idx_draw}"
+                        else:
+                            # 平滑后的整体车中心：使用青色大十字
+                            color_outer = (0, 0, 0)
+                            color_inner = (0, 255, 255)
+                            radius_outer = 18
+                            radius_inner = 16
+                            line_len = 20
+                            label = "CAR CENTER"
 
-                    # 文本：黑底+黄字
-                    cv2.putText(out_img, "CAR CENTER", (u_c + 10, v_c - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
-                    cv2.putText(out_img, "CAR CENTER", (u_c + 10, v_c - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        cv2.circle(out_img, (u_c, v_c), radius_outer, color_outer, 4)
+                        cv2.line(out_img, (u_c - (radius_outer+4), v_c), (u_c + (radius_outer+4), v_c), color_outer, 3)
+                        cv2.line(out_img, (u_c, v_c - (radius_outer+4)), (u_c, v_c + (radius_outer+4)), color_outer, 3)
+
+                        cv2.circle(out_img, (u_c, v_c), radius_inner, color_inner, 2)
+                        cv2.circle(out_img, (u_c, v_c), 4, color_inner, -1)
+                        cv2.line(out_img, (u_c - line_len, v_c), (u_c + line_len, v_c), color_inner, 2)
+                        cv2.line(out_img, (u_c, v_c - line_len), (u_c, v_c + line_len), color_inner, 2)
+
+                        cv2.putText(out_img, label, (u_c + 10, v_c - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
+                        cv2.putText(out_img, label, (u_c + 10, v_c - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_inner, 2)
 
                 # ====== 画出由 GuardRobot 推算得到的对面装甲板（两块） ======
-                # robot.armor_plate 现在包含原始两块 + 新推算两块
-                if len(robot.armor_plate) >= 4:
-                    inferred_armors = robot.armor_plate[2:4]
-                    for inf_armor in inferred_armors:
+                # 这里使用上面已经获取的 inferred_armors，确保只画一次
+                if inferred_armors:
+                    for idx_inf, inf_armor in enumerate(inferred_armors):
                         pts3d = np.asarray(inf_armor.camera_pos, dtype=float).reshape(-1, 3)
                         if pts3d.shape[0] != 4:
                             continue
 
-                        # 将四个3D角点投影到图像平面
                         pts2d = [camera2xy(p) for p in pts3d]
                         pts2d = [
                             (int(max(0, min(w - 1, u))), int(max(0, min(h - 1, v))))
                             for (u, v) in pts2d
                         ]
 
-                        # 按 [top_left, bottom_left, top_right, bottom_right] 顺序解析
                         tl_i, bl_i, tr_i, br_i = pts2d
 
-                        # 画出与真实装甲板相同样式的多边形和对角线，但使用黄色
+                        # 用亮黄色画矩形和对角线表示对面装甲板
                         poly = np.array([tl_i, bl_i, br_i, tr_i], dtype=np.int32).reshape(-1, 1, 2)
                         cv2.polylines(out_img, [poly], isClosed=True, color=(0, 255, 255), thickness=2)
-                        cv2.line(out_img, tl_i, br_i, (0, 255, 255), 1)
-                        cv2.line(out_img, bl_i, tr_i, (0, 255, 255), 1)
+                        cv2.line(out_img, tl_i, br_i, (0, 255, 255), 2)
+                        cv2.line(out_img, bl_i, tr_i, (0, 255, 255), 2)
+
+                        # 在中心处标注 OPP#idx
+                        center_inf = pts3d.mean(axis=0)
+                        u_o, v_o = camera2xy(center_inf)
+                        u_o = int(max(0, min(w - 1, u_o)))
+                        v_o = int(max(0, min(h - 1, v_o)))
+                        cv2.putText(out_img, f"OPP#{idx_inf}", (u_o + 5, v_o - 5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
             except Exception as e:
                 print("Center-Normal compute error:", repr(e))
         else:
             # 调试：没有足够装甲板用于计算中心
             if len(guardrobot_candidates) > 0:
-                print(f"[Center-Normal] only {len(guardrobot_candidates)} armor(s) usable for center this frame, need >=2")
+                pass
 
         # ====== 装甲板消失：连续丢失若干帧后删除其对应的运动模型（KF） ======
-        for armor_id, state in list(armor_kf_dict.items()):
-            # 如果这一帧没有被匹配更新，则视为丢失一帧
-            if state.get("miss_cnt", 0) is not None:  # 已有miss_cnt字段
-                if state["center_x"] < -1e8:  # 预留特殊标志，当前不使用
-                    continue
-            # miss_cnt 在匹配时已被清零，这里统一累加丢失帧
-            if state.get("updated", False):
-                state["updated"] = False
-            else:
-                state["miss_cnt"] = state.get("miss_cnt", 0) + 1
+        # for armor_id, state in list(armor_kf_dict.items()):
+        #     # 如果这一帧没有被匹配更新，则视为丢失一帧
+        #     if state.get("miss_cnt", 0) is not None:  # 已有miss_cnt字段
+        #         if state["center_x"] < -1e8:  # 预留特殊标志，当前不使用
+        #             continue
+        #     # miss_cnt 在匹配时已被清零，这里统一累加丢失帧
+        #     if state.get("updated", False):
+        #         state["updated"] = False
+        #     else:
+        #         state["miss_cnt"] = state.get("miss_cnt", 0) + 1
 
-            if state["miss_cnt"] > max_miss_frames:
-                del armor_kf_dict[armor_id]
+        #     if state["miss_cnt"] > max_miss_frames:
+        #         del armor_kf_dict[armor_id]
 
         # 写出与显示
         video_writer.write(out_img)
