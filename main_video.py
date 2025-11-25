@@ -423,7 +423,7 @@ def run(video_path):
 
 
 if __name__ == "__main__":
-    # run(video_path=r"./test_data/blue10.25.mp4")
+    run(video_path=r"./test_data/blue10.25.mp4")
     # 其他可选视频：
     # run(video_path=r"./test_data/small_blue.avi")
     # run(video_path=r"./test_data/small_red.avi")
@@ -431,4 +431,4 @@ if __name__ == "__main__":
     # run(video_path=r"./test_data/big_blue.avi")
     # run(video_path="./test_data/0323blue1.mp4")
     # run(video_path="./test_data/0323blue2.mp4")
-    run(video_path=r"./test_data/0325blue.mp4")
+    # run(video_path=r"./test_data/0325blue.mp4")
