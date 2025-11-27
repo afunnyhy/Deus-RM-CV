@@ -291,91 +291,40 @@ class GuardRobot:
     #     self.center_point = np.array([x_c, y_c, z_c], dtype=float)
     #     return self.center_point
 
-    def _reconstruct_corners_from_center(self, new_center: np.ndarray, armor: ArmorPlate) -> np.ndarray:
-        """在给定中心下, 使用原装甲板的"宽/高方向"与"长度"重建四个角点。
-
-        目的
-        ------
-        给定预测出来的对面装甲板中心 `center`, 希望在 3D 中构造一个
-        与当前观测装甲板在平面内"宽/高方向"和"尺寸"一致的四边形。
-
-        几何约定
-        ------
-        camera_pos 四点顺序: [top_left, bottom_left, top_right, bottom_right]
-
-        - 高度方向向量 v_height = bottom_left - top_left;
-        - 宽度方向向量 v_width  = top_right  - top_left;
-        - 高度长度 = |v_height|, 宽度长度 = |v_width|;
-        - 高度单位向量 v_dir = v_height / |v_height|;
-        - 宽度单位向量 u_dir = v_width  / |v_width|。
-
-        在新中心 center 处, 使用同样的宽高长度和方向构造矩形:
-            tl = center - half_w*u_dir - half_h*v_dir
-            bl = center - half_w*u_dir + half_h*v_dir
-            tr = center + half_w*u_dir - half_h*v_dir
-            br = center + half_w*u_dir + half_h*v_dir
-        """
-        new_center = np.asarray(new_center, dtype=float).reshape(3)
+    def _reconstruct_corners_from_center(self, armor: ArmorPlate, car_center_2d: np.ndarray) -> np.ndarray:
+        """根据小车二维中心 (x,z) 对原装甲板四角点在 x/z 平面做关于车心的对称映射，y 不变。"""
         pts = np.asarray(armor.camera_pos, dtype=float).reshape(-1, 3)
         if pts.shape[0] != 4:
             raise ValueError("ArmorPlate.camera_pos 必须是4个3D角点")
 
-        # 按约定顺序: [top_left, bottom_left, top_right, bottom_right]
-        top_left = pts[0]
-        bottom_left = pts[1]
-        top_right = pts[2]
-        bottom_right = pts[3]
-        center = (top_left + bottom_left + top_right + bottom_right) / 4.0
-        top_left_center=top_left-center
-        top_right_center=top_right-center
-        bottom_left_center=bottom_left-center
-        bottom_right_center=bottom_right-center
+        car_center_2d = np.asarray(car_center_2d, dtype=float).reshape(2)
+        car_x, car_z = car_center_2d[0], car_center_2d[1]
 
-        new_top_left=np.array([new_center[0]+top_left_center[0], new_center[1]+top_left_center[1],new_center[2]-top_left_center[2]],dtype=np.float32)
-        new_top_right=np.array([new_center[0]+top_right_center[0], new_center[1]+top_right_center[1],new_center[2]-top_right_center[2]],dtype=np.float32)
-        new_bottom_left=np.array([new_center[0]+bottom_left_center[0], new_center[1]+bottom_left_center[1],new_center[2]-bottom_left_center[2]],dtype=np.float32)
-        new_bottom_right=np.array([new_center[0]+bottom_right_center[0], new_center[1]+bottom_right_center[1],new_center[2]-bottom_right_center[2]],dtype=np.float32)
+        new_pts = np.empty_like(pts)
+        for i in range(len(pts)):
+            new_x = 2.0 * car_x - pts[i][0]
+            new_z = 2.0 * car_z - pts[i][2]
+            new_y = pts[i][1]  # 保持原 y
+            new_pts[i] = np.array([new_x, new_y, new_z], dtype=float)
 
-        return np.stack([new_top_left, new_bottom_left, new_top_right, new_bottom_right], axis=0)
+        # 返回顺序仍为 [top_left, bottom_left, top_right, bottom_right]
+        return new_pts
 
     def calculate_another_armor_by_center(self):
-        """根据当前观测的装甲板, 在车中心另一侧构造"对面装甲板"。
-
-        流程
-        ------
-        1. 用 get_center_from_normals() 得到小车中心 center_cam;
-        2. 用 find_armor_center() 得到每块装甲板中心 Ci;
-        3. 假定对面装甲板中心关于车中心对称:
-               C_opposite = 2 * C_car - Ci;
-        4. 在 C_opposite 处, 用 _reconstruct_corners_from_center 重建一块
-           与原装甲板宽/高尺寸与方向一致的 3D 矩形。
-
-        结果
-        ------
-        - self.armor_plate 中会追加与原装甲板数量相同的"对面装甲板"实例；
-        - 新增的 ArmorPlate.camera_pos 仍然是 4 个 3D 角点, 方便后续投影或可视化。
-        """
+        """根据当前观测装甲板和小车二维中心, 构造对面装甲板并追加到 self.armor_plate。"""
         # 1. 计算车中心与每块装甲板中心
-        center_cam = self.get_center_from_normals()  # 更新 self.center_point
-        self.find_armor_center()                     # 更新 self.armor_plate_center
+        center_cam = self.get_center_from_normals()  # center_cam: [x, z]
+        self.find_armor_center()  # 更新 self.armor_plate_center
 
         new_armors = []
 
-        for armor, C in zip(self.armor_plate, self.armor_plate_center):
-            C = np.asarray(C, dtype=np.float32).reshape(3)
-            C_car = np.asarray([center_cam[0],C[1],center_cam[1]],dtype=np.float32).reshape(3)
-
-            # 2. 对面装甲板中心: 关于车中心对称
-            #    C_opposite = 2*C_car - C
-            opposite_center = 2.0 * C_car - C
-
-            # 3. 利用原装甲板形状(宽/高方向和长度)在对面中心重建四角点
+        for armor in self.armor_plate:
+            # 直接用车的二维中心对原装甲板四角点做对称映射
             opposite_pts = self._reconstruct_corners_from_center(
-                new_center=opposite_center,
                 armor=armor,
+                car_center_2d=center_cam,
             )
 
-            # 4. 构造新的 ArmorPlate, 复用颜色/类型/置信度等属性
             new_armor = ArmorPlate(
                 points=opposite_pts,
                 color=armor.color,
@@ -385,7 +334,7 @@ class GuardRobot:
             )
             new_armors.append(new_armor)
 
-        # 5. 统一追加, 避免遍历时修改列表
         self.armor_plate.extend(new_armors)
+
 
 

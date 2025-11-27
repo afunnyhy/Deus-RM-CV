@@ -26,6 +26,8 @@ from light_detector import LightDetector  # 导入灯条解算类
 # from armor_chose import TargetSelector  # 导入目标选择类（按 main_video 逻辑不再使用）
 from pnp_solver import PnPSolver  # 导入PnP解算类
 from KalmanFilter import KalmanFilter as KF  # 新增：常速度卡尔曼滤波器
+from motion_state_detector import MotionStateDetector  # 运动状态检测器
+from rotation_velocity_estimator import RotationVelocityEstimator  # 旋转角速度估计器
 
 # from exceptiongroup import catch
 
@@ -122,6 +124,10 @@ def run():
     corner_kf_measure_noise = 0.2
     corner_kf_process_noise = 1.0
 
+    motion_detector = MotionStateDetector()  # 创建运动状态检测器实例
+    rotation_estimator = RotationVelocityEstimator()  # 创建旋转角速度估计器实例
+    robot_id = 1  # 假设我们跟踪的机器人ID为1
+
     # 录制视频（在线情况下可选）
     if save_video_time > 0:
         output_file = time.strftime("%Y%m%d_%H%M%S") + "_output.mp4"
@@ -138,6 +144,8 @@ def run():
 
     last_time = time.time()
     start_time = time.time()
+    
+    frame_count = 0  # 帧计数器
 
     print("Start working...")
     while True:
@@ -160,6 +168,72 @@ def run():
             all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
         else:
             ret_cv, all_detect_armor, out_img = armor_de.get_armors_by_img(orig_frame)
+            
+        # 记录装甲板法向量用于角速度计算
+        visible_armor_ids = []  # 当前可见的装甲板ID列表
+        for i, detected_armor_box in enumerate(all_detect_armor):
+            if used_yolo:
+                ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box, out_img)
+            else:
+                ret_detected = True
+                detected_armor = detected_armor_box
+            if not ret_detected:
+                continue
+
+            # 中心点 PnP，使用云台当前姿态 vision.pitch/vision.yaw
+            ret_pnp, armor_candidate, out_img = pnp_solver.get_armor_target(
+                detected_armor, out_img, vision.pitch, vision.yaw
+            )
+            if not ret_pnp or armor_candidate is None:
+                continue
+
+            # 角点 PnP：获得 4 角点在相机坐标系下的 3D
+            ret_pnp2, rvec, tvec, obj_pts_cam = pnp_solver.solve_pnp(detected_armor)
+            if not ret_pnp2 or obj_pts_cam is None:
+                continue
+                
+            # 计算法向量并更新到旋转估计器
+            armor_id = i  # 使用索引作为装甲板ID
+            visible_armor_ids.append(armor_id)
+            
+            # 从3D点计算法向量
+            if len(obj_pts_cam) >= 3:
+                p1 = np.array(obj_pts_cam[0])
+                p2 = np.array(obj_pts_cam[1])
+                p3 = np.array(obj_pts_cam[2])
+                
+                # 计算两个边向量
+                v1 = p2 - p1
+                v2 = p3 - p1
+                
+                # 计算法向量
+                normal_vector = np.cross(v1, v2)
+                if np.linalg.norm(normal_vector) > 1e-6:
+                    rotation_estimator.update_armor_normal(armor_id, now, normal_vector)
+
+        # 更新运动状态检测器
+        armor_count = len(all_detect_armor)
+        motion_detector.update(robot_id, armor_count, now)
+        motion_state = motion_detector.get_motion_state(robot_id)
+        
+        # 如果处于旋转状态，计算角速度
+        angular_velocity_info = None
+        if motion_state == MotionStateDetector.ROTATION and visible_armor_ids:
+            angular_velocity_info = rotation_estimator.estimate_robot_angular_velocity(visible_armor_ids)
+
+        # 在图像上显示运动状态
+        cv2.putText(out_img, f"Motion State: {motion_state}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(out_img, f"Armor Count: {armor_count}", (10, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    
+        # 如果有角速度信息，显示在图像上
+        if angular_velocity_info is not None:
+            angular_velocity, rotation_axis = angular_velocity_info
+            cv2.putText(out_img, f"Angular Velocity: {angular_velocity:.2f} rad/s", (10, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(out_img, f"Rotation Axis: [{rotation_axis[0]:.2f}, {rotation_axis[1]:.2f}, {rotation_axis[2]:.2f}]", (10, 150),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
         # 2) 灯条提点 + PnP，选面积最大装甲
         corner_meas_cam = None
