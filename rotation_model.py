@@ -232,6 +232,12 @@ class YawRateKalmanCV:
 
         return yaw_rate_est, yaw_rate_pred
 
+
+def _yaw_from_rvec(rvec):
+    """内部封装一下 yaw 提取，方便以后改坐标系。"""
+    return GetAngularVelocity._yaw_from_rvec(rvec)
+
+
 class RotationModel:
     def __init__(self,
                  initial_rvec=None,
@@ -258,10 +264,6 @@ class RotationModel:
             r_meas=r_meas
         )
 
-    def _yaw_from_rvec(self, rvec):
-        """内部封装一下 yaw 提取，方便以后改坐标系。"""
-        return GetAngularVelocity._yaw_from_rvec(rvec)
-
     def update_with_rvec(self, rvec, timestamp=None, dt_predict=0.0):
         """
         使用当前帧 rvec 更新旋转模型。
@@ -285,7 +287,7 @@ class RotationModel:
         )
 
         # 2\. 从 rvec 提取当前 yaw
-        yaw_curr = self._yaw_from_rvec(rvec)
+        yaw_curr = _yaw_from_rvec(rvec)
 
         # 3\. 用 OpenCV 卡尔曼滤波 yaw / yaw_rate
         yaw_rate_filt, yaw_rate_pred = self.yaw_kf.step(
