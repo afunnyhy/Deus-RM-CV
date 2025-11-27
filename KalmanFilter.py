@@ -20,6 +20,14 @@ class KalmanFilter:
                  process_noise=1.0,
                  x=0, y=0, z=0,
                  vx=0, vy=0, vz=0):
+        # 默认参数字典
+        self.parameters = {
+            'state_dim': state_dim,           # 状态维度
+            'measure_dim': measure_dim,       # 测量维度
+            'init_cov': init_cov,             # 初始协方差
+            'measure_noise': measure_noise,   # 测量噪声
+            'process_noise': process_noise    # 过程噪声
+        }
         # 基本参数
         self.z = None
         self.state_dim = int(state_dim)

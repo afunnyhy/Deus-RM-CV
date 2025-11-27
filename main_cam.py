@@ -28,6 +28,7 @@ from pnp_solver import PnPSolver  # 导入PnP解算类
 from KalmanFilter import KalmanFilter as KF  # 新增：常速度卡尔曼滤波器
 from motion_state_detector import MotionStateDetector  # 运动状态检测器
 from rotation_velocity_estimator import RotationVelocityEstimator  # 旋转角速度估计器
+from guardRobot import GuardRobot  # 添加GuardRobot导入
 
 # from exceptiongroup import catch
 

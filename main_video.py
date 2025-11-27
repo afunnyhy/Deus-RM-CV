@@ -441,11 +441,22 @@ def run(video_path):
 
                         tl_i, bl_i, tr_i, br_i = pts2d
 
-                        # 用亮黄色画矩形和对角线表示对面装甲板
-                        poly = np.array([tl_i, bl_i, br_i, tr_i], dtype=np.int32).reshape(-1, 1, 2)
-                        cv2.polylines(out_img, [poly], isClosed=True, color=(0, 255, 255), thickness=2)
-                        cv2.line(out_img, tl_i, br_i, (0, 255, 255), 2)
-                        cv2.line(out_img, bl_i, tr_i, (0, 255, 255), 2)
+                        # 用亮黄色画矩形表示对面装甲板，增加透明度和填充效果提升3D感
+                        # 创建装甲板区域的半透明填充效果
+                        overlay = out_img.copy()
+                        pts_array = np.array([tl_i, tr_i, br_i, bl_i], dtype=np.int32)
+                        cv2.fillPoly(overlay, [pts_array], color=(0, 128, 255))  # 半透明填充
+                        cv2.addWeighted(overlay, 0.3, out_img, 0.7, 0, out_img)  # 混合图像
+                        
+                        # 绘制装甲板边界，增强3D效果
+                        cv2.line(out_img, tl_i, tr_i, (0, 255, 255), 2)  # 上边缘
+                        cv2.line(out_img, tr_i, br_i, (0, 200, 255), 2)  # 右边缘
+                        cv2.line(out_img, br_i, bl_i, (0, 150, 255), 2)  # 下边缘
+                        cv2.line(out_img, bl_i, tl_i, (0, 100, 255), 2)  # 左边缘
+                        
+                        # 绘制对角线
+                        cv2.line(out_img, tl_i, br_i, (0, 255, 255), 1)  # 主对角线
+                        cv2.line(out_img, bl_i, tr_i, (0, 255, 255), 1)  # 副对角线
 
                         # 在中心处标注 OPP#idx
                         center_inf = pts3d.mean(axis=0)
