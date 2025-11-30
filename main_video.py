@@ -298,9 +298,13 @@ def run(video_path):
                 if len(raw_pixels) != 4:
                     continue
                 tl_f, bl_f, tr_f, br_f = raw_pixels
-                filt_rect = np.array([tl_f, bl_f, tr_f, br_f], dtype=np.int32).reshape(-1, 1, 2)
+                # 修正点的顺序以形成正确的矩形而不是8字形
+                filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
                 cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
                 
+                # 绘制装甲板的对角线
+                cv2.line(out_img, tl_f, br_f, (0, 255, 255), 1)  # 主对角线
+                cv2.line(out_img, bl_f, tr_f, (0, 255, 255), 1)  # 副对角线
             # 绘制预测的装甲板（基于记录半径的方法）
             if predicted_armors:
                 for i, pred_armor in enumerate(predicted_armors):
@@ -313,15 +317,19 @@ def run(video_path):
                     if len(raw_pixels) == 4:
                         tl_f, bl_f, tr_f, br_f = raw_pixels
                         # 用不同颜色绘制预测的装甲板
-                        filt_rect = np.array([tl_f, bl_f, tr_f, br_f], dtype=np.int32).reshape(-1, 1, 2)
+                        # 修正点的顺序以形成正确的矩形而不是8字形
+                        filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
                         cv2.polylines(out_img, [filt_rect], isClosed=True, color=(255, 0, 255), thickness=2)  # 紫色表示预测
                         
+                        # 绘制装甲板的对角线
+                        cv2.line(out_img, tl_f, br_f, (0, 255, 255), 1)  # 主对角线
+                        cv2.line(out_img, bl_f, tr_f, (0, 255, 255), 1)  # 副对角线
+                        
                         # 添加标签
-                        center_u = int(np.mean([tl_f[0], bl_f[0], tr_f[0], br_f[0]]))
-                        center_v = int(np.mean([tl_f[1], bl_f[1], tr_f[1], br_f[1]]))
+                        center_u = int(np.mean([tl_f[0], bl_f[0], br_f[0], tr_f[0]]))
+                        center_v = int(np.mean([tl_f[1], bl_f[1], br_f[1], tr_f[1]]))
                         cv2.putText(out_img, f"PREDICTED#{i}", (center_u, center_v), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-            
             # 绘制卡尔曼滤波预测的装甲板
             if kf_predicted_armors:
                 for i, pred_armor in enumerate(kf_predicted_armors):
@@ -334,12 +342,16 @@ def run(video_path):
                     if len(raw_pixels) == 4:
                         tl_f, bl_f, tr_f, br_f = raw_pixels
                         # 用不同颜色绘制卡尔曼滤波预测的装甲板
-                        filt_rect = np.array([tl_f, bl_f, tr_f, br_f], dtype=np.int32).reshape(-1, 1, 2)
-                        cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 255), thickness=2)  # 青色表示KF预测
+                        # 修正点的顺序以形成正确的矩形而不是8字形
+                        filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
+                        cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 255), thickness=2)  # 青色表示KF预测                        
+                        # 绘制装甲板的对角线
+                        cv2.line(out_img, tl_f, br_f, (0, 255, 255), 1)  # 主对角线
+                        cv2.line(out_img, bl_f, tr_f, (0, 255, 255), 1)  # 副对角线
                         
                         # 添加标签
-                        center_u = int(np.mean([tl_f[0], bl_f[0], tr_f[0], br_f[0]]))
-                        center_v = int(np.mean([tl_f[1], bl_f[1], tr_f[1], br_f[1]]))
+                        center_u = int(np.mean([tl_f[0], bl_f[0], br_f[0], tr_f[0]]))
+                        center_v = int(np.mean([tl_f[1], bl_f[1], br_f[1], tr_f[1]]))
                         cv2.putText(out_img, f"KF_PREDICT#{i}", (center_u, center_v), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             

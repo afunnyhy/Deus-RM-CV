@@ -59,6 +59,16 @@ class GuardRobot:
         
         # 帧计数器
         self.frame_count = 0
+        
+        # === SENSITIVITY IMPROVEMENT SUGGESTION ===
+        # 添加配置参数以改善半径计算和选择的敏感性
+        # 1. 高度匹配容差：用于确定两个装甲板是否属于同一高度组
+        self.height_tolerance = 0.05  # 可根据实际情况调整
+        # 2. 半径变化率限制：防止由于噪声导致的半径剧烈变化
+        self.max_radius_change_rate = 0.01  # 最大10%的变化率
+        # 3. 平滑因子：用于平滑半径计算的历史权重
+        self.radius_smoothing_factor = 0.2
+        # 范围0-1，越大越依赖历史值
 
     def update_armor_plates(self, new_armor_plates: List):
         """
@@ -123,6 +133,16 @@ class GuardRobot:
                 unmatched_new.remove(new_idx)
         
         return matched_pairs, unmatched_new, unmatched_old
+
+    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
+    # ISSUE: 匹配过程仅基于x坐标，忽略了y和z坐标信息，且阈值固定
+    # POTENTIAL PROBLEMS:
+    # 1. 当装甲板在x方向重叠时，容易产生错误匹配
+    # 2. 固定阈值不能适应不同距离下的匹配需求
+    # SOLUTION SUGGESTIONS:
+    # 1. 使用三维空间距离而非单一维度距离
+    # 2. 实现自适应阈值，根据距离动态调整匹配阈值
+    # 3. 引入外观特征匹配（如颜色、纹理）提高匹配准确性
 
     def find_armor_normal_vector(self):
         """根据装甲板的 4 个 3D 角点求平面法向量。
@@ -396,53 +416,15 @@ class GuardRobot:
         
         return self.center_point
 
-    def _reconstruct_armor_from_center_and_dimensions(self, center_3d: np.ndarray, armor_height: float) -> np.ndarray:
-        """
-        根据装甲板中心点坐标和装甲板尺寸信息重构装甲板四个角点坐标
-        
-        参数:
-        center_3d: 装甲板中心点的3D坐标 [x, y, z]
-        armor_height: 装甲板的高度，用于查找匹配的装甲板尺寸
-        
-        返回:
-        np.ndarray: 装甲板四个角点的3D坐标 [[top_left, bottom_left, top_right, bottom_right]]
-        """
-        # 查找与给定高度最匹配的装甲板尺寸
-        matched_height = None
-        min_height_diff = float('inf')
-        matched_dimensions = None
-        
-        for height, dimensions in self.armor_dimensions.items():
-            height_diff = abs(height - armor_height)
-            if height_diff < min_height_diff:
-                min_height_diff = height_diff
-                matched_height = height
-                matched_dimensions = dimensions
-                
-        # 如果没有找到匹配的高度，抛出异常或使用默认处理
-        if matched_height is None or matched_dimensions is None:
-            # 如果没有记录的尺寸信息，我们无法准确重构装甲板
-            raise ValueError(f"No recorded armor dimensions for height {armor_height}. "
-                             f"Available heights: {list(self.armor_dimensions.keys())}")
-            
-        # 使用实际测量的装甲板尺寸
-        armor_type, length, width, z_diff = matched_dimensions
-            
-        # 根据装甲板尺寸和中心点计算四个角点
-        center_x, center_y, center_z = center_3d
-        
-        # 假设装甲板正面朝向z轴正方向，x轴方向为长度，y轴方向为宽度
-        half_length = length / 2
-        half_width = width / 2
-        half_z_diff = z_diff / 2
-        # 计算四个角点坐标
-        # 注意：这里的坐标系是相机坐标系：x向右，y向下，z向前
-        top_left = [center_x + half_z_diff, center_y + half_width, center_z+half_length]
-        bottom_left = [center_x - half_z_diff, center_y - half_width, center_z+half_length]
-        top_right = [center_x + half_z_diff, center_y + half_width, center_z-half_length]
-        bottom_right = [center_x - half_z_diff, center_y - half_width, center_z-half_length]
-        
-        return np.array([top_left, bottom_left, top_right, bottom_right], dtype=np.float32)
+    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
+    # ISSUE: 中心点预测完全依赖于单一装甲板的信息和预估的半径
+    # POTENTIAL PROBLEMS:
+    # 1. 单一装甲板可能因为遮挡或识别错误导致预测偏差较大
+    # 2. 半径估算的误差会直接影响中心点位置的准确性
+    # SOLUTION SUGGESTIONS:
+    # 1. 引入多帧数据融合，增加预测的稳定性
+    # 2. 添加异常值检测机制，过滤明显错误的预测结果
+    # 3. 实现自适应半径校准机制，根据历史预测结果动态调整
 
     def calculate_height_to_radius_mapping(self):
         """
@@ -481,6 +463,13 @@ class GuardRobot:
             self.height_to_radius[armor_height] = radius
             
         return self.height_to_radius
+
+    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
+    # ISSUE: 当前高度匹配使用绝对差值比较，可能导致精度问题
+    # SOLUTION SUGGESTION: 
+    # 1. 添加可配置的高度容差阈值
+    # 2. 使用相对误差而非绝对误差进行匹配
+    # 3. 实现更复杂的匹配策略（如聚类算法）
 
     def record_initial_radii(self):
         """
@@ -536,6 +525,13 @@ class GuardRobot:
         self.calculate_height_to_radius_mapping()
             
         return self.recorded_radii
+
+    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
+    # ISSUE: 当前代码中装甲板高度匹配使用简单的最近邻匹配
+    # SOLUTION SUGGESTION:
+    # 1. 引入高度容差阈值，避免因微小测量误差导致错误匹配
+    # 2. 添加更稳健的统计方法（如滑动窗口平均）来提高稳定性
+    # 3. 实现缓存机制以减少重复计算
 
     def predict_other_armors(self, visible_armor_index=0):
         """
@@ -620,10 +616,11 @@ class GuardRobot:
             # 使用在计算中心点时记录的高度-半径映射关系
             current_height = visible_center[1]
             
-            # 根据预测装甲板的位置选择合适的半径
+            # 根据预测装甲板的位置选择合适的半径和高度
             if i == 0 or i == 2:  # 90度和270度方向（相邻装甲板，高度不同）
-                # 查找与当前装甲板高度不同的半径
+                # 查找与当前装甲板高度不同的半径和高度
                 best_radius = self.recorded_radii[0]
+                best_height = current_height  # 默认使用当前高度
                 height_diff_max = 0
                 
                 for height, radius in self.height_to_radius.items():
@@ -631,11 +628,14 @@ class GuardRobot:
                     if height_diff > height_diff_max and height_diff > 1e-6:  # 确保不是同一个高度
                         height_diff_max = height_diff
                         best_radius = radius
+                        best_height = height  # 使用匹配到的不同高度
                         
                 radius = best_radius
+                pred_y = best_height  # 使用不同高度
             else:  # 180度方向（对面装甲板，高度相同）
                 # 查找与当前装甲板高度相同的半径
                 best_radius = self.recorded_radii[0]
+                best_height = current_height  # 默认使用当前高度
                 min_height_diff = float('inf')
                 
                 for height, radius in self.height_to_radius.items():
@@ -643,13 +643,14 @@ class GuardRobot:
                     if height_diff < min_height_diff:
                         min_height_diff = height_diff
                         best_radius = radius
+                        best_height = height  # 确认使用相同高度
                         
                 radius = best_radius
+                pred_y = best_height  # 使用相同高度
             
             # 计算预测位置
             pred_x = center_x + radius * np.cos(pred_angle)
             pred_z = center_z + radius * np.sin(pred_angle)
-            pred_y = visible_center[1]  # 保持相同高度
             
             # 根据装甲板类型重构装甲板角点
             pred_center_3d = np.array([pred_x, pred_y, pred_z])
@@ -675,6 +676,72 @@ class GuardRobot:
             predicted_armors.append(new_armor)
             
         return predicted_armors
+
+    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
+    # ISSUE: 半径选择算法过于简化，仅基于高度差进行匹配
+    # POTENTIAL PROBLEMS:
+    # 1. 当两个装甲板高度相近时，容易产生误判
+    # 2. 缺乏对噪声和异常值的鲁棒性
+    # 3. 没有考虑装甲板之间的几何约束关系
+    # SOLUTION SUGGESTIONS:
+    # 1. 增加高度容差检查，避免过度敏感
+    # 2. 实现基于几何模型的验证机制
+    # 3. 添加历史数据平滑处理，提高稳定性
+
+    def _reconstruct_armor_from_center_and_dimensions(self, center_3d: np.ndarray, armor_height: float) -> np.ndarray:
+        """
+        根据装甲板中心点坐标和装甲板尺寸信息重构装甲板四个角点坐标
+        
+        参数:
+        center_3d: 装甲板中心点的3D坐标 [x, y, z]
+        armor_height: 装甲板的高度，用于查找匹配的装甲板尺寸
+        
+        返回:
+        np.ndarray: 装甲板四个角点的3D坐标 [[top_left, bottom_left, top_right, bottom_right]]
+        """
+        # 查找与给定高度最匹配的装甲板尺寸
+        matched_height = None
+        min_height_diff = float('inf')
+        matched_dimensions = None
+        
+        for height, dimensions in self.armor_dimensions.items():
+            height_diff = abs(height - armor_height)
+            if height_diff < min_height_diff:
+                min_height_diff = height_diff
+                matched_height = height
+                matched_dimensions = dimensions
+                
+        # 如果没有找到匹配的高度，抛出异常或使用默认处理
+        if matched_height is None or matched_dimensions is None:
+            # 如果没有记录的尺寸信息，我们无法准确重构装甲板
+            raise ValueError(f"No recorded armor dimensions for height {armor_height}. "
+                             f"Available heights: {list(self.armor_dimensions.keys())}")
+            
+        # 使用实际测量的装甲板尺寸
+        armor_type, length, width, z_diff = matched_dimensions
+            
+        # 根据装甲板尺寸和中心点计算四个角点
+        center_x, center_y, center_z = center_3d
+        
+        # 假设装甲板正面朝向z轴正方向，x轴方向为长度，y轴方向为宽度
+        half_length = length / 2
+        half_width = width / 2
+        half_z_diff = z_diff / 2
+        # 计算四个角点坐标
+        # 注意：这里的坐标系是相机坐标系：x向右，y向下，z向前
+        top_left = [center_x + half_z_diff, center_y + half_width, center_z+half_length]
+        bottom_left = [center_x - half_z_diff, center_y - half_width, center_z+half_length]
+        top_right = [center_x + half_z_diff, center_y + half_width, center_z-half_length]
+        bottom_right = [center_x - half_z_diff, center_y - half_width, center_z-half_length]
+        
+        return np.array([top_left, bottom_left, top_right, bottom_right], dtype=np.float32)
+
+    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
+    # ISSUE: 角点重构依赖于预记录的尺寸信息，如果初始测量不准确会影响后续预测
+    # SOLUTION SUGGESTION:
+    # 1. 实现尺寸信息的动态更新机制
+    # 2. 添加尺寸测量的置信度评估
+    # 3. 使用多个样本的统计平均值而非单一测量值
 
     def _reconstruct_corners_from_center(self, armor: ArmorPlate, car_center_2d: np.ndarray) -> np.ndarray:
         """根据小车二维中心 (x,z) 对原装甲板四角点在 x/z 平面做关于车心的对称映射，y 不变。"""
