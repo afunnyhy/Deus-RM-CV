@@ -42,6 +42,9 @@ class GuardRobot:
         # 存储首次观测到的两个装甲板的半径，用于后续预测
         self.recorded_radii = []
         
+        # 记录不同装甲板的尺寸信息：{height: (armor_type, length, width, top_z_diff, bottom_z_diff)}
+        self.armor_dimensions = {}
+        
         # 装甲板追踪器字典
         self.armor_trackers: Dict[int, Dict[str, Any]] = {}
         
@@ -393,6 +396,54 @@ class GuardRobot:
         
         return self.center_point
 
+    def _reconstruct_armor_from_center_and_dimensions(self, center_3d: np.ndarray, armor_height: float) -> np.ndarray:
+        """
+        根据装甲板中心点坐标和装甲板尺寸信息重构装甲板四个角点坐标
+        
+        参数:
+        center_3d: 装甲板中心点的3D坐标 [x, y, z]
+        armor_height: 装甲板的高度，用于查找匹配的装甲板尺寸
+        
+        返回:
+        np.ndarray: 装甲板四个角点的3D坐标 [[top_left, bottom_left, top_right, bottom_right]]
+        """
+        # 查找与给定高度最匹配的装甲板尺寸
+        matched_height = None
+        min_height_diff = float('inf')
+        matched_dimensions = None
+        
+        for height, dimensions in self.armor_dimensions.items():
+            height_diff = abs(height - armor_height)
+            if height_diff < min_height_diff:
+                min_height_diff = height_diff
+                matched_height = height
+                matched_dimensions = dimensions
+                
+        # 如果没有找到匹配的高度，抛出异常或使用默认处理
+        if matched_height is None or matched_dimensions is None:
+            # 如果没有记录的尺寸信息，我们无法准确重构装甲板
+            raise ValueError(f"No recorded armor dimensions for height {armor_height}. "
+                             f"Available heights: {list(self.armor_dimensions.keys())}")
+            
+        # 使用实际测量的装甲板尺寸
+        armor_type, length, width, z_diff = matched_dimensions
+            
+        # 根据装甲板尺寸和中心点计算四个角点
+        center_x, center_y, center_z = center_3d
+        
+        # 假设装甲板正面朝向z轴正方向，x轴方向为长度，y轴方向为宽度
+        half_length = length / 2
+        half_width = width / 2
+        half_z_diff = z_diff / 2
+        # 计算四个角点坐标
+        # 注意：这里的坐标系是相机坐标系：x向右，y向下，z向前
+        top_left = [center_x + half_z_diff, center_y + half_width, center_z+half_length]
+        bottom_left = [center_x - half_z_diff, center_y - half_width, center_z+half_length]
+        top_right = [center_x + half_z_diff, center_y + half_width, center_z-half_length]
+        bottom_right = [center_x - half_z_diff, center_y - half_width, center_z-half_length]
+        
+        return np.array([top_left, bottom_left, top_right, bottom_right], dtype=np.float32)
+
     def calculate_height_to_radius_mapping(self):
         """
         根据装甲板的高度计算旋转半径。
@@ -451,12 +502,35 @@ class GuardRobot:
         
         # 记录前两块装甲板的半径
         self.recorded_radii.clear()
+        self.armor_dimensions.clear()
         for i in range(min(2, len(self.armor_plate))):
+            armor = self.armor_plate[i]
             armor_center = self.armor_plate_center[i]
             dx = armor_center[0] - center_x
             dz = armor_center[2] - center_z
             radius = np.sqrt(dx*dx + dz*dz)
             self.recorded_radii.append(radius)
+            
+            # 记录装甲板尺寸信息
+            armor_height = armor_center[1]
+            armor_type = armor.armor_type
+            
+            # 计算装甲板的长度、宽度和z方向的差异
+            pts = np.asarray(armor.camera_pos, dtype=float).reshape(-1, 3)
+            top_points = pts[[0, 2]]  # top_left, top_right
+            bottom_points = pts[[1, 3]]  # bottom_left, bottom_right
+            
+            # 计算装甲板在z方向上的差异
+            top_z_avg = np.mean(top_points[:, 2])
+            bottom_z_avg = np.mean(bottom_points[:, 2])
+            z_diff = abs(top_z_avg - bottom_z_avg)
+            
+            # 计算装甲板的长度和宽度
+            length = np.linalg.norm(pts[2] - pts[0])  # top_right to top_left
+            width = np.linalg.norm(pts[1] - pts[0])   # bottom_left to top_left
+            
+            # 存储装甲板尺寸信息
+            self.armor_dimensions[armor_height] = (armor_type, length, width, z_diff)
             
         # 同时计算高度到半径的映射
         self.calculate_height_to_radius_mapping()
@@ -541,22 +615,54 @@ class GuardRobot:
             pred_angle = angle_visible + angle_offset
             
             # 根据装甲板布局规律选择正确的半径
-            # 第1个预测装甲板(90度偏移)使用第2个半径
-            # 第2个预测装甲板(180度偏移)使用第1个半径(对面装甲板)
-            # 第3个预测装甲板(270度偏移)使用第2个半径
-            if i == 0 or i == 2:  # 90度和270度方向使用第二个半径
-                radius = self.recorded_radii[1]  
-            else:  # 180度方向使用第一个半径
-                radius = self.recorded_radii[0]
+            # 相邻装甲板(90度和270度方向)使用另一个半径（高度不同）
+            # 对面装甲板(180度方向)使用相同的半径（高度相同）
+            # 使用在计算中心点时记录的高度-半径映射关系
+            current_height = visible_center[1]
+            
+            # 根据预测装甲板的位置选择合适的半径
+            if i == 0 or i == 2:  # 90度和270度方向（相邻装甲板，高度不同）
+                # 查找与当前装甲板高度不同的半径
+                best_radius = self.recorded_radii[0]
+                height_diff_max = 0
+                
+                for height, radius in self.height_to_radius.items():
+                    height_diff = abs(height - current_height)
+                    if height_diff > height_diff_max and height_diff > 1e-6:  # 确保不是同一个高度
+                        height_diff_max = height_diff
+                        best_radius = radius
+                        
+                radius = best_radius
+            else:  # 180度方向（对面装甲板，高度相同）
+                # 查找与当前装甲板高度相同的半径
+                best_radius = self.recorded_radii[0]
+                min_height_diff = float('inf')
+                
+                for height, radius in self.height_to_radius.items():
+                    height_diff = abs(height - current_height)
+                    if height_diff < min_height_diff:
+                        min_height_diff = height_diff
+                        best_radius = radius
+                        
+                radius = best_radius
             
             # 计算预测位置
             pred_x = center_x + radius * np.cos(pred_angle)
             pred_z = center_z + radius * np.sin(pred_angle)
             pred_y = visible_center[1]  # 保持相同高度
             
-            # 根据预测的中心点重构装甲板角点
-            pred_center_2d = np.array([pred_x, pred_z])
-            predicted_pts = self._reconstruct_corners_from_center(visible_armor, pred_center_2d)
+            # 根据装甲板类型重构装甲板角点
+            pred_center_3d = np.array([pred_x, pred_y, pred_z])
+            
+            # 对于相邻装甲板（i == 0 or i == 2），使用新的重构函数
+            # 对于对面装甲板（i == 1），可以使用原来的镜像方法
+            if i == 0 or i == 2:  # 相邻装甲板
+                # 使用新的函数根据中心点和装甲板尺寸重构角点
+                predicted_pts = self._reconstruct_armor_from_center_and_dimensions(pred_center_3d, pred_y)
+            else:  # 对面装甲板
+                # 对面装甲板可以使用原来的镜像方法
+                pred_center_2d = np.array([pred_x, pred_z])
+                predicted_pts = self._reconstruct_corners_from_center(visible_armor, pred_center_2d)
             
             # 创建新的装甲板对象
             new_armor = ArmorPlate(

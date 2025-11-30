@@ -67,6 +67,9 @@ class KalmanFilter:
         H[2, 2] = 1.0
         return H
 
+    def _make_R(self, measure_noise, m):
+        return np.eye(m, dtype=np.float32) * float(measure_noise)
+
     def _make_F(self, dt):
         dt = float(max(dt, 1e-6))
         F = np.eye(self.state_dim, dtype=np.float32)
