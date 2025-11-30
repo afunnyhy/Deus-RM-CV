@@ -224,11 +224,12 @@ def run():
         # 更新运动状态检测器
         armor_count = len(all_detect_armor)
         motion_detector.update(robot_id, armor_count, now)
-        motion_state = motion_detector.get_motion_state(robot_id)
+        # 不再区分运动状态，总是使用平移状态
+        motion_state = MotionStateDetector.TRANSLATION
         
-        # 如果处于旋转状态，计算角速度
+        # 总是计算角速度
         angular_velocity_info = None
-        if motion_state == MotionStateDetector.ROTATION and visible_armor_ids:
+        if visible_armor_ids:
             angular_velocity_info = rotation_estimator.estimate_robot_angular_velocity(visible_armor_ids)
 
         # 在图像上显示运动状态
@@ -284,84 +285,84 @@ def run():
             guardrobot_candidates.append((detected_armor, armor_area))
 
             # 如果处于平移状态，启用卡尔曼滤波器
-            if motion_state == MotionStateDetector.TRANSLATION:
-                # 为每个装甲板创建唯一ID（基于装甲板中心位置）
-                armor_center_x = get_center_x(detected_armor_box)
+            # if motion_state == MotionStateDetector.TRANSLATION:
+            # 为每个装甲板创建唯一ID（基于装甲板中心位置）
+            armor_center_x = get_center_x(detected_armor_box)
+            
+            # 简单的装甲板匹配逻辑（基于中心x坐标）
+            matched_armor_id = None
+            for armor_id, state in armor_kf_dict.items():
+                if abs(state["center_x"] - armor_center_x) < 50:  # 阈值可根据需要调整
+                    matched_armor_id = armor_id
+                    break
+            
+            # 如果没有匹配的装甲板，则创建新的ID
+            if matched_armor_id is None:
+                matched_armor_id = len(armor_kf_dict)
+                armor_kf_dict[matched_armor_id] = {
+                    "kfs": [None] * 4,
+                    "inited": [False] * 4,
+                    "miss_cnt": 0,
+                    "center_x": armor_center_x,
+                    "color": friend_color,
+                    "troop_type": my_TroopType,
+                    "smooth_pixels": None
+                }
+            
+            # 更新装甲板状态
+            armor_kf_dict[matched_armor_id]["miss_cnt"] = 0
+            armor_kf_dict[matched_armor_id]["center_x"] = armor_center_x
+            
+            # 为4个角点应用卡尔曼滤波
+            kfs = armor_kf_dict[matched_armor_id]["kfs"]
+            inited = armor_kf_dict[matched_armor_id]["inited"]
+            
+            filtered_pixels = []
+            for idx, p in enumerate(obj_pts_cam):
+                px, py, pz = map(float, p)
                 
-                # 简单的装甲板匹配逻辑（基于中心x坐标）
-                matched_armor_id = None
-                for armor_id, state in armor_kf_dict.items():
-                    if abs(state["center_x"] - armor_center_x) < 50:  # 阈值可根据需要调整
-                        matched_armor_id = armor_id
-                        break
+                if not inited[idx]:
+                    kf_point = KF(
+                        init_cov=corner_kf_init_cov,
+                        measure_noise=corner_kf_measure_noise,
+                        process_noise=corner_kf_process_noise,
+                        x=px, y=py, z=pz,
+                        vx=0.0, vy=0.0, vz=0.0,
+                    )
+                    kf_point.init_kf(dt=dt)
+                    kfs[idx] = kf_point
+                    inited[idx] = True
                 
-                # 如果没有匹配的装甲板，则创建新的ID
-                if matched_armor_id is None:
-                    matched_armor_id = len(armor_kf_dict)
-                    armor_kf_dict[matched_armor_id] = {
-                        "kfs": [None] * 4,
-                        "inited": [False] * 4,
-                        "miss_cnt": 0,
-                        "center_x": armor_center_x,
-                        "color": friend_color,
-                        "troop_type": my_TroopType,
-                        "smooth_pixels": None
-                    }
+                kf_point = kfs[idx]
+                kf_point.predict_next(dt)
+                kf_point.correct_by_sensor([px, py, pz])
                 
-                # 更新装甲板状态
-                armor_kf_dict[matched_armor_id]["miss_cnt"] = 0
-                armor_kf_dict[matched_armor_id]["center_x"] = armor_center_x
+                state_post, _P = kf_point.get_state()
+                pos_post = state_post[:3].reshape(-1)
                 
-                # 为4个角点应用卡尔曼滤波
-                kfs = armor_kf_dict[matched_armor_id]["kfs"]
-                inited = armor_kf_dict[matched_armor_id]["inited"]
-                
-                filtered_pixels = []
-                for idx, p in enumerate(obj_pts_cam):
-                    px, py, pz = map(float, p)
-                    
-                    if not inited[idx]:
-                        kf_point = KF(
-                            init_cov=corner_kf_init_cov,
-                            measure_noise=corner_kf_measure_noise,
-                            process_noise=corner_kf_process_noise,
-                            x=px, y=py, z=pz,
-                            vx=0.0, vy=0.0, vz=0.0,
-                        )
-                        kf_point.init_kf(dt=dt)
-                        kfs[idx] = kf_point
-                        inited[idx] = True
-                    
-                    kf_point = kfs[idx]
-                    kf_point.predict_next(dt)
-                    kf_point.correct_by_sensor([px, py, pz])
-                    
-                    state_post, _P = kf_point.get_state()
-                    pos_post = state_post[:3].reshape(-1)
-                    
-                    u_f, v_f = camera2xy(pos_post)
-                    u_f = int(max(0, min(w - 1, u_f)))
-                    v_f = int(max(0, min(h - 1, v_f)))
-                    filtered_pixels.append((u_f, v_f))
-                
-                # 使用滤波后的角点绘制装甲板
-                if len(filtered_pixels) == 4:
-                    tl_f, bl_f, tr_f, br_f = filtered_pixels
-                    filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)  # 修正点顺序
-                    cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
-            else:
-                # 非平移状态直接使用PnP结果绘制
-                raw_pixels = []
-                for p in obj_pts_cam:
-                    u, v = camera2xy(p)
-                    u = int(max(0, min(w - 1, u)))
-                    v = int(max(0, min(h - 1, v)))
-                    raw_pixels.append((u, v))
-                if len(raw_pixels) != 4:
-                    continue
-                tl_f, bl_f, tr_f, br_f = raw_pixels
+                u_f, v_f = camera2xy(pos_post)
+                u_f = int(max(0, min(w - 1, u_f)))
+                v_f = int(max(0, min(h - 1, v_f)))
+                filtered_pixels.append((u_f, v_f))
+            
+            # 使用滤波后的角点绘制装甲板
+            if len(filtered_pixels) == 4:
+                tl_f, bl_f, tr_f, br_f = filtered_pixels
                 filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)  # 修正点顺序
                 cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
+            # else:
+                # 非平移状态直接使用PnP结果绘制
+                # raw_pixels = []
+                # for p in obj_pts_cam:
+                #     u, v = camera2xy(p)
+                #     u = int(max(0, min(w - 1, u)))
+                #     v = int(max(0, min(h - 1, v)))
+                #     raw_pixels.append((u, v))
+                # if len(raw_pixels) != 4:
+                #     continue
+                # tl_f, bl_f, tr_f, br_f = raw_pixels
+                # filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)  # 修正点顺序
+                # cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
 
         # ====== 装甲板消失：连续丢失若干帧后删除其对应的运动模型（KF） ======
         for armor_id, state in list(armor_kf_dict.items()):

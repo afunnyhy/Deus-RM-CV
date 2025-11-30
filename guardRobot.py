@@ -804,9 +804,22 @@ class GuardRobot:
         camera2xy_func: 相机坐标到像素坐标的转换函数
         angular_velocity_info: 角速度信息 (angular_velocity, rotation_axis)
         """
-        # 重置所有追踪器的丢失计数
+        # 如果还没有创建追踪器，则初始化4个追踪器
+        if not self.armor_trackers:
+            for i in range(4):  # 初始化4个追踪器
+                self.armor_trackers[i] = {
+                    "kfs": [None] * 4,
+                    "inited": [False] * 4,
+                    "miss_cnt": 0,
+                    "center_x": 0.0,
+                    "color": Color.RED,  # 默认颜色
+                    "troop_type": TroopType.INFANTRY,  # 默认兵种
+                    "smooth_pixels": None
+                }
+        
+        # 增加所有追踪器的丢失计数
         for armor_id in self.armor_trackers:
-            self.armor_trackers[armor_id]["miss_cnt"] = 0
+            self.armor_trackers[armor_id]["miss_cnt"] = self.armor_trackers[armor_id].get("miss_cnt", 0) + 1
             
         # 为每个装甲板创建或更新追踪器
         for armor_idx, armor in enumerate(self.armor_plate):
@@ -821,23 +834,28 @@ class GuardRobot:
                     state["center_x"] = armor_center_x
                     state["color"] = armor.color
                     state["troop_type"] = armor.troop_type
+                    # 重置丢失计数
+                    state["miss_cnt"] = 0
                     break
             
-            # 如果没有匹配的装甲板，则创建新的ID
+            # 如果没有匹配的装甲板，则使用第一个可用的追踪器
             if matched_armor_id is None:
-                matched_armor_id = len(self.armor_trackers)
-                self.armor_trackers[matched_armor_id] = {
-                    "kfs": [None] * 4,
-                    "inited": [False] * 4,
-                    "miss_cnt": 0,
-                    "center_x": armor_center_x,
-                    "color": armor.color,
-                    "troop_type": armor.troop_type,
-                    "smooth_pixels": None
-                }
-            else:
-                # 如果匹配到了，更新中心x坐标
+                for armor_id, state in self.armor_trackers.items():
+                    if state["miss_cnt"] > 0:  # 使用丢失的追踪器
+                        matched_armor_id = armor_id
+                        state["center_x"] = armor_center_x
+                        state["color"] = armor.color
+                        state["troop_type"] = armor.troop_type
+                        state["miss_cnt"] = 0
+                        break
+            
+            # 如果还是没有匹配到，则使用第一个追踪器
+            if matched_armor_id is None:
+                matched_armor_id = 0
                 self.armor_trackers[matched_armor_id]["center_x"] = armor_center_x
+                self.armor_trackers[matched_armor_id]["color"] = armor.color
+                self.armor_trackers[matched_armor_id]["troop_type"] = armor.troop_type
+                self.armor_trackers[matched_armor_id]["miss_cnt"] = 0
             
             # 为4个角点应用卡尔曼滤波
             kfs = self.armor_trackers[matched_armor_id]["kfs"]
@@ -912,8 +930,22 @@ class GuardRobot:
         """
         predicted_armors = []
         
-        # 遍历所有追踪器
-        for armor_id, state in self.armor_trackers.items():
+        # 确保有4个追踪器
+        while len(self.armor_trackers) < 4:
+            armor_id = len(self.armor_trackers)
+            self.armor_trackers[armor_id] = {
+                "kfs": [None] * 4,
+                "inited": [False] * 4,
+                "miss_cnt": 0,
+                "center_x": 0.0,
+                "color": Color.RED,  # 默认颜色
+                "troop_type": TroopType.INFANTRY,  # 默认兵种
+                "smooth_pixels": None
+            }
+        
+        # 遍历所有4个追踪器
+        for armor_id in range(4):
+            state = self.armor_trackers[armor_id]
             kfs = state["kfs"]
             predicted_points = []
             

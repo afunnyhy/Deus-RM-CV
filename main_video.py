@@ -115,8 +115,26 @@ def run(video_path):
     robot_id = 1  # 假设我们跟踪的机器人ID为1
     frame_count = 0  # 帧计数器
 
-    # 创建 GuardRobot 实例
-    robot = None
+    # 创建装甲板追踪器（持续追踪4个装甲板）
+    armor_trackers = {}
+    for i in range(4):  # 初始化4个追踪器，分别对应4个装甲板位置
+        armor_trackers[i] = {
+            "kfs": [None] * 4,
+            "inited": [False] * 4,
+            "miss_cnt": max_miss_frames,  # 初始设为最大值，表示未激活
+            "center_x": 0.0,
+            "color": test_color,
+            "troop_type": TroopType.INFANTRY,  # 默认兵种
+            "smooth_pixels": None,
+            "last_detected_frame": -1,  # 上次检测到的帧数
+            "predicted_position": None  # 上次预测的位置
+        }
+    
+    # 存储小车的几何信息
+    recorded_radii = []  # 记录的两个半径
+    height_to_radius = {}  # 高度到半径的映射
+    armor_dimensions = {}  # 装甲板尺寸信息
+    center_point = None  # 小车中心点
 
     print("Start processing...")
 
@@ -179,11 +197,12 @@ def run(video_path):
         # 更新运动状态检测器
         armor_count = len(all_detect_armor)
         motion_detector.update(robot_id, armor_count, now)
-        motion_state = motion_detector.get_motion_state(robot_id)
+        # 不再区分运动状态，总是使用平移状态
+        motion_state = MotionStateDetector.TRANSLATION
         
-        # 如果处于旋转状态，计算角速度
+        # 总是计算角速度
         angular_velocity_info = None
-        if motion_state == MotionStateDetector.ROTATION and visible_armor_ids:
+        if visible_armor_ids:
             angular_velocity_info = rotation_estimator.estimate_robot_angular_velocity(visible_armor_ids)
 
         # 在图像上显示运动状态
@@ -233,24 +252,123 @@ def run(video_path):
             armor_area = getattr(detected_armor_box, "area", 0.0)
             guardrobot_candidates.append((detected_armor, armor_area))
 
-        # 创建或更新 GuardRobot 实例
+        # 更新装甲板追踪器
+        # 增加所有追踪器的丢失计数
+        for armor_id in armor_trackers:
+            armor_trackers[armor_id]["miss_cnt"] = armor_trackers[armor_id].get("miss_cnt", 0) + 1
+            
+        # 为每个检测到的装甲板更新追踪器
+        for armor_idx, (detected_armor, armor_area) in enumerate(guardrobot_candidates):
+            armor_center_x = get_center_x(detected_armor)
+            
+            # 简单的装甲板匹配逻辑（基于中心x坐标）
+            matched_armor_id = None
+            min_distance = float('inf')
+            
+            # 寻找最接近的追踪器
+            for armor_id, state in armor_trackers.items():
+                distance = abs(state["center_x"] - armor_center_x)
+                if distance < min_distance and distance < 100:  # 阈值可根据需要调整
+                    min_distance = distance
+                    matched_armor_id = armor_id
+            
+            # 如果没有找到足够接近的追踪器，则使用第一个可用的追踪器
+            if matched_armor_id is None:
+                for armor_id, state in armor_trackers.items():
+                    if state["miss_cnt"] > max_miss_frames//2:  # 使用较长时间未匹配的追踪器
+                        matched_armor_id = armor_id
+                        break
+            
+            # 如果还是没有匹配到，则使用第一个追踪器
+            if matched_armor_id is None:
+                matched_armor_id = armor_idx % 4  # 循环使用追踪器0-3
+            
+            # 更新对应追踪器
+            state = armor_trackers[matched_armor_id]
+            state["center_x"] = armor_center_x
+            state["color"] = detected_armor.color
+            state["troop_type"] = detected_armor.troop_type
+            state["miss_cnt"] = 0  # 重置丢失计数
+            state["last_detected_frame"] = frame_count  # 记录当前帧数
+            
+            # 为4个角点应用卡尔曼滤波
+            kfs = state["kfs"]
+            inited = state["inited"]
+            
+            filtered_pixels = []
+            for idx, p in enumerate(detected_armor.camera_pos):
+                px, py, pz = map(float, p)
+                
+                # 计算点的半径和角度（相对于机器人中心点）
+                r = 0.0
+                theta = 0.0
+                omega = 0.0
+                
+                # 如果有中心点信息，计算相对半径和角度
+                if center_point is not None:
+                    center_x, center_z = center_point[0], center_point[1]
+                    # 在xz平面上计算相对位置
+                    dx = px - center_x
+                    dz = pz - center_z
+                    r = np.sqrt(dx*dx + dz*dz)
+                    theta = np.arctan2(dz, dx)
+                
+                # 如果有角速度信息，使用它
+                if angular_velocity_info is not None:
+                    omega, _ = angular_velocity_info
+                
+                if not inited[idx]:
+                    kf_point = KF(
+                        state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角速度(1) + 速度(3) = 9维
+                        init_cov=corner_kf_init_cov,
+                        measure_noise=corner_kf_measure_noise,
+                        process_noise=corner_kf_process_noise,
+                        x=px, y=py, z=pz,
+                        r=r, theta=theta, omega=omega,
+                        vx=0.0, vy=0.0, vz=0.0,
+                    )
+                    kf_point.init_kf(dt=dt)
+                    kfs[idx] = kf_point
+                    inited[idx] = True
+                
+                kf_point = kfs[idx]
+                kf_point.predict_next(dt)
+                kf_point.correct_by_sensor([px, py, pz])
+                
+                state_post, _P = kf_point.get_state()
+                pos_post = state_post[:3].reshape(-1)
+                
+                u_f, v_f = camera2xy(pos_post)
+                u_f = int(max(0, min(w - 1, u_f)))
+                v_f = int(max(0, min(h - 1, v_f)))
+                filtered_pixels.append((u_f, v_f))
+            
+            # 保存滤波后的像素坐标
+            state["smooth_pixels"] = filtered_pixels
+
+        # 创建 GuardRobot 实例用于计算
+        robot = None
         if guardrobot_candidates:
             # 提取装甲板对象
             armor_plates = [candidate[0] for candidate in guardrobot_candidates]
             
-            # 如果还没有创建 robot 实例，则创建一个
-            if robot is None:
-                robot = GuardRobot(armor_plates)
-            else:
-                # 动态更新 robot 实例中的装甲板
-                robot.update_armor_plates(armor_plates)
+            # 创建 robot 实例
+            robot = GuardRobot(armor_plates)
+            # 设置已记录的几何信息
+            robot.recorded_radii = recorded_radii
+            robot.height_to_radius = height_to_radius
+            robot.armor_dimensions = armor_dimensions
+            robot.center_point = center_point
             
             # 如果检测到两个或更多装甲板，记录初始半径
-            if len(armor_plates) >= 2 and len(robot.recorded_radii) < 2:
+            if len(armor_plates) >= 2 and len(recorded_radii) < 2:
                 try:
                     robot.record_initial_radii()
-                    print(f"[Prediction] Recorded initial radii: {robot.recorded_radii}")
-                    print(f"[Prediction] Height to radius mapping: {robot.height_to_radius}")
+                    recorded_radii = robot.recorded_radii
+                    height_to_radius = robot.height_to_radius
+                    armor_dimensions = robot.armor_dimensions
+                    print(f"[Prediction] Recorded initial radii: {recorded_radii}")
+                    print(f"[Prediction] Height to radius mapping: {height_to_radius}")
                 except Exception as e:
                     print(f"[Prediction] Failed to record initial radii: {e}")
             
@@ -259,23 +377,26 @@ def run(video_path):
                 # 使用两个装甲板计算中心点
                 try:
                     center_xz = robot.get_center_from_normals()
-                    robot.center_point = center_xz
+                    center_point = center_xz
                     print(f"[Center] Updated center point from 2+ armors: x={center_xz[0]:.3f}, z={center_xz[1]:.3f}")
                 except Exception as e:
                     print(f"[Center] Failed to compute center from normals: {e}")
-            elif len(armor_plates) == 1 and len(robot.recorded_radii) >= 2:
+            elif len(armor_plates) == 1 and len(recorded_radii) >= 2:
                 # 使用单个装甲板和记录的半径预测中心点
                 try:
+                    robot.center_point = center_point
                     center_xz = robot.predict_center_from_single_armor(0)
+                    center_point = center_xz
                     print(f"[Center] Predicted center point from 1 armor: x={center_xz[0]:.3f}, z={center_xz[1]:.3f}")
                 except Exception as e:
                     print(f"[Center] Failed to predict center from single armor: {e}")
             
             # 如果只检测到一个装甲板且已记录初始半径，则进行预测
             predicted_armors = []
-            if len(armor_plates) == 1 and len(robot.recorded_radii) >= 2:
+            if len(armor_plates) == 1 and len(recorded_radii) >= 2:
                 try:
                     # 使用预测功能获取其他装甲板位置
+                    robot.center_point = center_point
                     predicted_armors = robot.predict_other_armors(0)  # 0表示第一个（也是唯一一个）可见装甲板
                     print(f"[Prediction] Predicted {len(predicted_armors)} armors based on 1 visible armor")
                 except Exception as e:
@@ -284,11 +405,56 @@ def run(video_path):
             # 合并检测到的装甲板和预测的装甲板
             all_armors_for_tracking = armor_plates + predicted_armors
             
-            # 更新装甲板追踪器，传入角速度信息，对所有装甲板（包括预测的）应用卡尔曼滤波
-            robot.update_armor_trackers(dt, h, w, camera2xy, angular_velocity_info)
-            
             # 使用卡尔曼滤波器预测装甲板位置
-            kf_predicted_armors = robot.predict_armor_positions(dt, angular_velocity_info)
+            kf_predicted_armors = []
+            
+            # 按固定顺序遍历所有4个追踪器进行预测（确保每次预测都能对应起来）
+            for armor_id in range(4):
+                state = armor_trackers[armor_id]
+                kfs = state["kfs"]
+                inited = state["inited"]
+                predicted_points = []
+                
+                # 对每个角点进行预测
+                for idx, kf in enumerate(kfs):
+                    # 如果该KF尚未初始化，则创建一个新的
+                    if not inited[idx]:
+                        # 创建一个默认的KF，后续会在有真实数据时更新
+                        kf_point = KF(
+                            state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角度(1) + 速度(3) = 9维
+                            init_cov=corner_kf_init_cov,
+                            measure_noise=corner_kf_measure_noise,
+                            process_noise=corner_kf_process_noise,
+                            x=0.0, y=0.0, z=0.0,
+                            r=0.0, theta=0.0, omega=0.0,
+                            vx=0.0, vy=0.0, vz=0.0,
+                        )
+                        kf_point.init_kf(dt=dt)
+                        kfs[idx] = kf_point
+                        inited[idx] = True
+                    
+                    if kf is not None:
+                        # 预测下一个状态
+                        pred = kf.predict_next(dt)
+                        # 获取预测的位置
+                        pred_pos = pred[:3].reshape(-1)
+                        predicted_points.append(pred_pos)
+                
+                # 创建预测的装甲板对象
+                if len(predicted_points) == 4:
+                    predicted_armor = ArmorPlate(
+                        points=np.array(predicted_points),
+                        color=state["color"],
+                        troop_type=state["troop_type"],
+                        area=0,  # 面积暂时设为0
+                        confident=0.5  # 置信度设为中等
+                    )
+                    # 添加装甲板ID信息
+                    predicted_armor.armor_id = armor_id
+                    kf_predicted_armors.append(predicted_armor)
+                    print(f"[KF_DEBUG] Added KF prediction for armor_id {armor_id}")
+                else:
+                    print(f"[KF_DEBUG] Skipped KF prediction for armor_id {armor_id}, only {len(predicted_points)} points")
             
             # 绘制实际检测到的装甲板（绿色）
             for armor_plate in armor_plates:
@@ -368,6 +534,122 @@ def run(video_path):
                     v_o = int(max(0, min(h - 1, v_o)))
                     cv2.putText(out_img, f"PREDICTED#{i}", (u_o + 5, v_o - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            # 绘制卡尔曼滤波预测的装甲板（无论是否在画面中）
+            if kf_predicted_armors:
+                print(f"[KF_DEBUG] Total KF predictions to display: {len(kf_predicted_armors)}")
+                for i, pred_armor in enumerate(kf_predicted_armors):
+                    pts3d = np.asarray(pred_armor.camera_pos, dtype=float).reshape(-1, 3)
+                    if pts3d.shape[0] != 4:
+                        continue
+
+                    pts2d = [camera2xy(p) for p in pts3d]
+                    pts2d = [
+                        (int(max(0, min(w - 1, u))), int(max(0, min(h - 1, v))))
+                        for (u, v) in pts2d
+                    ]
+
+                    tl_i, bl_i, tr_i, br_i = pts2d
+
+                    # 用亮蓝色画矩形表示卡尔曼滤波预测装甲板，增加透明度和填充效果提升3D感
+                    # 创建装甲板区域的半透明填充效果
+                    overlay = out_img.copy()
+                    pts_array = np.array([tl_i, bl_i, br_i, tr_i], dtype=np.int32)  # 正确的点顺序
+                    cv2.fillPoly(overlay, [pts_array], color=(255, 128, 0))  # 半透明填充
+                    cv2.addWeighted(overlay, 0.3, out_img, 0.7, 0, out_img)  # 混合图像
+                    
+                    # 绘制装甲板边界，增强3D效果
+                    cv2.line(out_img, tl_i, bl_i, (255, 100, 0), 2)  # 左边缘
+                    cv2.line(out_img, bl_i, br_i, (255, 150, 0), 2)  # 下边缘
+                    cv2.line(out_img, br_i, tr_i, (255, 200, 0), 2)  # 右边缘
+                    cv2.line(out_img, tr_i, tl_i, (255, 255, 0), 2)  # 上边缘
+                    
+                    # 绘制对角线
+                    cv2.line(out_img, tl_i, br_i, (255, 255, 0), 1)  # 主对角线
+                    cv2.line(out_img, bl_i, tr_i, (255, 255, 0), 1)  # 副对角线
+
+                    # 在中心处标注 KF_PREDICT#idx，显示对应的追踪器ID
+                    center_pred = pts3d.mean(axis=0)
+                    u_o, v_o = camera2xy(center_pred)
+                    u_o = int(max(0, min(w - 1, u_o)))
+                    v_o = int(max(0, min(h - 1, v_o)))
+                    cv2.putText(out_img, f"KF_TRACKER#{pred_armor.armor_id}", (u_o + 5, v_o - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                    print(f"[KF_DEBUG] Displaying KF prediction #{pred_armor.armor_id} at ({u_o}, {v_o})")
+            
+            # 绘制小车中心点（如果已计算）
+            if center_point is not None:
+                center_x, center_z = center_point[0], center_point[1]
+                # 为了在图像上显示，我们需要一个y坐标，这里使用第一个装甲板的y坐标
+                if guardrobot_candidates:
+                    first_armor = guardrobot_candidates[0][0]
+                    pts = np.asarray(first_armor.camera_pos, dtype=float).reshape(-1, 3)
+                    center_y = pts[0][1]  # 使用第一个点的y坐标
+                    center_point_3d = np.array([center_x, center_y, center_z])
+                    u, v = camera2xy(center_point_3d)
+                    u = int(max(0, min(w - 1, u)))
+                    v = int(max(0, min(h - 1, v)))
+                    
+                    # 绘制中心点
+                    cv2.circle(out_img, (u, v), 8, (0, 0, 255), -1)  # 红色实心圆
+                    cv2.putText(out_img, "CENTER", (u + 10, v - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    
+                    # 打印中心点坐标
+                    print(f"[Center] Car center point: x={center_x:.3f}, y={center_y:.3f}, z={center_z:.3f}")
+
+        else:
+            # 没有检测到装甲板，但仍进行预测
+            kf_predicted_armors = []
+            
+            # 按固定顺序遍历所有4个追踪器进行预测（确保每次预测都能对应起来）
+            for armor_id in range(4):
+                state = armor_trackers[armor_id]
+                kfs = state["kfs"]
+                inited = state["inited"]
+                predicted_points = []
+                
+                # 对每个角点进行预测
+                for idx, kf in enumerate(kfs):
+                    # 如果该KF尚未初始化，则创建一个新的
+                    if not inited[idx]:
+                        # 创建一个默认的KF，后续会在有真实数据时更新
+                        kf_point = KF(
+                            state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角度(1) + 速度(3) = 9维
+                            init_cov=corner_kf_init_cov,
+                            measure_noise=corner_kf_measure_noise,
+                            process_noise=corner_kf_process_noise,
+                            x=0.0, y=0.0, z=0.0,
+                            r=0.0, theta=0.0, omega=0.0,
+                            vx=0.0, vy=0.0, vz=0.0,
+                        )
+                        kf_point.init_kf(dt=dt)
+                        kfs[idx] = kf_point
+                        inited[idx] = True
+                    
+                    if kf is not None:
+                        # 预测下一个状态
+                        pred = kf.predict_next(dt)
+                        # 获取预测的位置
+                        pred_pos = pred[:3].reshape(-1)
+                        predicted_points.append(pred_pos)
+                
+                # 创建预测的装甲板对象
+                if len(predicted_points) == 4:
+                    predicted_armor = ArmorPlate(
+                        points=np.array(predicted_points),
+                        color=state["color"],
+                        troop_type=state["troop_type"],
+                        area=0,  # 面积暂时设为0
+                        confident=0.5  # 置信度设为中等
+                    )
+                    # 添加装甲板ID信息
+                    predicted_armor.armor_id = armor_id
+                    kf_predicted_armors.append(predicted_armor)
+                    print(f"[KF_DEBUG] Added KF prediction for armor_id {armor_id}")
+                else:
+                    print(f"[KF_DEBUG] Skipped KF prediction for armor_id {armor_id}, only {len(predicted_points)} points")
+            
             # 绘制卡尔曼滤波预测的装甲板（无论是否在画面中）
             if kf_predicted_armors:
                 for i, pred_armor in enumerate(kf_predicted_armors):
@@ -400,39 +682,15 @@ def run(video_path):
                     cv2.line(out_img, tl_i, br_i, (255, 255, 0), 1)  # 主对角线
                     cv2.line(out_img, bl_i, tr_i, (255, 255, 0), 1)  # 副对角线
 
-                    # 在中心处标注 KF_PREDICT#idx
+                    # 在中心处标注 KF_PREDICT#idx，显示对应的追踪器ID
                     center_pred = pts3d.mean(axis=0)
                     u_o, v_o = camera2xy(center_pred)
                     u_o = int(max(0, min(w - 1, u_o)))
                     v_o = int(max(0, min(h - 1, v_o)))
-                    cv2.putText(out_img, f"KF_PREDICT#{i}", (u_o + 5, v_o - 5),
+                    cv2.putText(out_img, f"KF_TRACKER#{pred_armor.armor_id}", (u_o + 5, v_o - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-            
-            # 绘制小车中心点（如果已计算）
-            if robot and robot.center_point is not None:
-                center_x, center_z = robot.center_point[0], robot.center_point[1]
-                # 为了在图像上显示，我们需要一个y坐标，这里使用第一个装甲板的y坐标
-                if len(robot.armor_plate_center) > 0:
-                    center_y = robot.armor_plate_center[0][1]
-                    center_point_3d = np.array([center_x, center_y, center_z])
-                    u, v = camera2xy(center_point_3d)
-                    u = int(max(0, min(w - 1, u)))
-                    v = int(max(0, min(h - 1, v)))
-                    
-                    # 绘制中心点
-                    cv2.circle(out_img, (u, v), 8, (0, 0, 255), -1)  # 红色实心圆
-                    cv2.putText(out_img, "CENTER", (u + 10, v - 10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                    
-                    # 打印中心点坐标
-                    print(f"[Center] Car center point: x={center_x:.3f}, y={center_y:.3f}, z={center_z:.3f}")
 
-        else:
-            # 没有检测到装甲板
-            if robot is not None:
-                # 清除装甲板信息
-                robot.update_armor_plates([])
-            pass
+        frame_count += 1
 
         # ====== 如果本帧至少有两块通过KF链路且有3D角点的装甲板，则用法向量直线最近点中点作为小车中心 ======
         if len(guardrobot_candidates) >= 2 and robot is not None:
@@ -610,11 +868,5 @@ def run(video_path):
     cap.release()
     cv2.destroyAllWindows()
 
-
 if __name__ == "__main__":
-    # run(video_path=r"./test_data/blue10.25.mp4")
-    # 其他可选视频：
-    # run(video_path=r"./test_data/small_blue.avi")
-    # run(video_path=r"./test_data/small_red.avi")
-    run(video_path=r"C:\Users\sjj\Desktop\Deus-RM-CV\test_data\0323blue1.mp4")
-    # run(video_path=r"C:\Users\sjj\Desktop\Deus-RM-CV\test_data\0325blue.mp4")
+    run(r"C:\Users\sjj\Desktop\Deus-RM-CV\test_data\0325blue.mp4")

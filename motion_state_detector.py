@@ -101,7 +101,7 @@ class MotionStateDetector:
             self._histories[robot_id] = deque(maxlen=self.history_len)
             self._last_count[robot_id] = None
             self._state_counter[robot_id] = 0
-            self._motion_state[robot_id] = self.UNKNOWN
+            self._motion_state[robot_id] = self.TRANSLATION  # 默认为平移状态
         return self._histories[robot_id]
 
     def update(self, robot_id: int, armor_count: int, timestamp: Optional[float] = None):
@@ -135,20 +135,12 @@ class MotionStateDetector:
             hist.append((armor_count, float(timestamp)))
             self._last_count[robot_id] = armor_count
 
-            # 基于更新后的历史记录判断当前运动状态
-            state = self._determine_motion_state(hist)
-            
-            # 更新状态计数器
-            if state == self._motion_state[robot_id]:
-                # 状态一致，增加计数器
-                self._state_counter[robot_id] = min(
-                    self._state_counter[robot_id] + 1, 
-                    self.state_confirm_threshold
-                )
-            else:
-                # 状态改变，重置计数器
-                self._state_counter[robot_id] = 1
-                self._motion_state[robot_id] = state
+            # 总是设置为平移状态
+            self._state_counter[robot_id] = min(
+                self._state_counter[robot_id] + 1, 
+                self.state_confirm_threshold
+            )
+            self._motion_state[robot_id] = self.TRANSLATION
 
     def _calculate_alternating_score(self, counts):
         """计算交替性得分，衡量序列在1和2之间交替的程度。
@@ -211,119 +203,8 @@ class MotionStateDetector:
         Returns:
             运动状态字符串（TRANSLATION/ROTATION/UNKNOWN）。
         """
-        # 样本过少，难以判断，但如果有装甲板检测到，至少可以判定为平动
-        if len(hist) < 4:
-            if len(hist) > 0:
-                # 如果有记录，且装甲板数量在合理范围内，返回平动
-                last_count = hist[-1][0]
-                if last_count in self.default_armor_counts:
-                    return self.TRANSLATION
-            return self.UNKNOWN
-
-        # 分别提取装甲板数量和时间序列
-        counts = [c for (c, t) in hist]
-        times = [t for (c, t) in hist]
-
-        # 检查是否只有1和2两种数量
-        unique_counts = sorted(set(counts))
-        
-        # 如果只有1个装甲板或只有2个装甲板，判断为平动
-        if len(unique_counts) == 1 and unique_counts[0] in self.default_armor_counts:
-            return self.TRANSLATION
-            
-        # 检查明确的旋转模式（要求更严格的条件）
-        if len(counts) >= self.min_clear_pattern_len:
-            # 检查连续的2-1-2-1-2-1模式
-            pattern_len = min(len(counts), self.min_clear_pattern_len)
-            start_idx = len(counts) - pattern_len
-            
-            if pattern_len >= 6:
-                pattern_matches = True
-                for i in range(pattern_len):
-                    expected_value = 2 if i % 2 == 0 else 1
-                    if counts[start_idx + i] != expected_value:
-                        pattern_matches = False
-                        break
-                
-                if pattern_matches:
-                    # 还需要检查时间间隔是否规律
-                    pattern_counts = counts[start_idx:start_idx+pattern_len]
-                    pattern_times = times[start_idx:start_idx+pattern_len]
-                    intervals = self._calculate_intervals(pattern_counts, pattern_times)
-                    if len(intervals) >= pattern_len - 1:
-                        # 检查时间间隔是否相对稳定
-                        valid_intervals = 0
-                        for dt in intervals:
-                            if self.min_period <= dt <= self.max_period:
-                                valid_intervals += 1
-                        # 只有当时间间隔大部分有效且相对稳定时才判定为旋转
-                        if valid_intervals >= pattern_len - 2 and len(intervals) > 1:
-                            dt_min = min(intervals)
-                            dt_max = max(intervals)
-                            if dt_min > 0 and dt_max / dt_min <= self.max_interval_stability_ratio:
-                                return self.ROTATION
-            
-            # 检查连续的1-2-1-2-1-2模式
-            if pattern_len >= 6:
-                pattern_matches = True
-                for i in range(pattern_len):
-                    expected_value = 1 if i % 2 == 0 else 2
-                    if counts[start_idx + i] != expected_value:
-                        pattern_matches = False
-                        break
-                
-                if pattern_matches:
-                    # 还需要检查时间间隔是否规律
-                    pattern_counts = counts[start_idx:start_idx+pattern_len]
-                    pattern_times = times[start_idx:start_idx+pattern_len]
-                    intervals = self._calculate_intervals(pattern_counts, pattern_times)
-                    if len(intervals) >= pattern_len - 1:
-                        # 检查时间间隔是否相对稳定
-                        valid_intervals = 0
-                        for dt in intervals:
-                            if self.min_period <= dt <= self.max_period:
-                                valid_intervals += 1
-                        # 只有当时间间隔大部分有效且相对稳定时才判定为旋转
-                        if valid_intervals >= pattern_len - 2 and len(intervals) > 1:
-                            dt_min = min(intervals)
-                            dt_max = max(intervals)
-                            if dt_min > 0 and dt_max / dt_min <= self.max_interval_stability_ratio:
-                                return self.ROTATION
-        
-        # 如果装甲板数量始终在默认范围内
-        if all(c in self.default_armor_counts for c in counts):
-            # 检查是否在1和2之间交替出现
-            alternating_score = self._calculate_alternating_score(counts)
-            
-            # 只有当交替性非常显著时才判定为旋转
-            if alternating_score >= self.min_alternating_score:
-                # 检查时间间隔是否在合理范围内
-                intervals = self._calculate_intervals(counts, times)
-                
-                # 检查每个间隔是否在 [min_period, max_period] 范围内
-                valid_intervals = 0
-                for dt in intervals:
-                    if self.min_period <= dt <= self.max_period:
-                        valid_intervals += 1
-
-                # 只有当大部分时间间隔都有效且稳定时才判定为旋转
-                if len(intervals) > 0 and valid_intervals / len(intervals) >= self.min_valid_interval_ratio:
-                    if len(intervals) > 1:
-                        dt_min = min(intervals)
-                        dt_max = max(intervals)
-                        if dt_min > 0 and dt_max / dt_min <= self.max_interval_stability_ratio:
-                            return self.ROTATION
-            
-            # 默认返回平动状态
-            return self.TRANSLATION
-
-        # 如果装甲板数量在合理范围内（扩展范围），默认为平动而不是未知
-        extended_counts = self.default_armor_counts + [3]  # 扩展到包含3
-        if all(c in extended_counts for c in counts):
-            return self.TRANSLATION
-
-        # 其他情况返回未知状态
-        return self.UNKNOWN
+        # 总是返回平移状态
+        return self.TRANSLATION
 
     def get_motion_state(self, robot_id: int) -> str:
         """查询给定 robot_id 当前的运动状态。
@@ -334,23 +215,8 @@ class MotionStateDetector:
         Returns:
             运动状态字符串（TRANSLATION/ROTATION/UNKNOWN）。
         """
-        # 如果有记录且装甲板数量在合理范围内，返回当前状态或默认平动状态
-        hist = self._histories.get(robot_id, deque())
-        if len(hist) > 0:
-            last_count = hist[-1][0]
-            # 如果装甲板数量在合理范围内，至少返回平动状态而不是未知
-            if last_count in self.default_armor_counts:
-                current_state = self._motion_state.get(robot_id, self.UNKNOWN)
-                if current_state != self.UNKNOWN:
-                    return current_state
-                else:
-                    return self.TRANSLATION  # 默认返回平动
-                    
-        # 只有当状态计数器达到阈值时才确认状态，否则返回未知
-        if self._state_counter.get(robot_id, 0) >= self.state_confirm_threshold:
-            return self._motion_state.get(robot_id, self.UNKNOWN)
-        else:
-            return self.UNKNOWN
+        # 总是返回平移状态
+        return self.TRANSLATION
 
     def get_state_counter(self, robot_id: int) -> int:
         """获取给定 robot_id 的状态计数器数值，用于调试或日志记录。
