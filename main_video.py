@@ -271,9 +271,6 @@ def run(video_path):
                 except Exception as e:
                     print(f"[Center] Failed to predict center from single armor: {e}")
             
-            # 更新装甲板追踪器，传入角速度信息
-            robot.update_armor_trackers(dt, h, w, camera2xy, angular_velocity_info)
-            
             # 如果只检测到一个装甲板且已记录初始半径，则进行预测
             predicted_armors = []
             if len(armor_plates) == 1 and len(robot.recorded_radii) >= 2:
@@ -284,76 +281,132 @@ def run(video_path):
                 except Exception as e:
                     print(f"[Prediction] Failed to predict other armors: {e}")
             
+            # 合并检测到的装甲板和预测的装甲板
+            all_armors_for_tracking = armor_plates + predicted_armors
+            
+            # 更新装甲板追踪器，传入角速度信息，对所有装甲板（包括预测的）应用卡尔曼滤波
+            robot.update_armor_trackers(dt, h, w, camera2xy, angular_velocity_info)
+            
             # 使用卡尔曼滤波器预测装甲板位置
             kf_predicted_armors = robot.predict_armor_positions(dt, angular_velocity_info)
             
-            # 绘制实际检测到的装甲板
+            # 绘制实际检测到的装甲板（绿色）
             for armor_plate in armor_plates:
-                raw_pixels = []
-                for p in armor_plate.camera_pos:
-                    u, v = camera2xy(p)
-                    u = int(max(0, min(w - 1, u)))
-                    v = int(max(0, min(h - 1, v)))
-                    raw_pixels.append((u, v))
-                if len(raw_pixels) != 4:
+                pts3d = np.asarray(armor_plate.camera_pos, dtype=float).reshape(-1, 3)
+                if pts3d.shape[0] != 4:
                     continue
-                tl_f, bl_f, tr_f, br_f = raw_pixels
-                # 修正点的顺序以形成正确的矩形而不是8字形
-                filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
-                cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
+
+                pts2d = [camera2xy(p) for p in pts3d]
+                pts2d = [
+                    (int(max(0, min(w - 1, u))), int(max(0, min(h - 1, v))))
+                    for (u, v) in pts2d
+                ]
+
+                tl_i, bl_i, tr_i, br_i = pts2d
+
+                # 用绿色画矩形表示检测到的装甲板，增加透明度和填充效果提升3D感
+                # 创建装甲板区域的半透明填充效果
+                overlay = out_img.copy()
+                pts_array = np.array([tl_i, bl_i, br_i, tr_i], dtype=np.int32)  # 正确的点顺序
+                cv2.fillPoly(overlay, [pts_array], color=(0, 128, 0))  # 半透明填充
+                cv2.addWeighted(overlay, 0.3, out_img, 0.7, 0, out_img)  # 混合图像
                 
-                # 绘制装甲板的对角线
-                cv2.line(out_img, tl_f, br_f, (0, 255, 255), 1)  # 主对角线
-                cv2.line(out_img, bl_f, tr_f, (0, 255, 255), 1)  # 副对角线
+                # 绘制装甲板边界，增强3D效果
+                cv2.line(out_img, tl_i, bl_i, (0, 100, 0), 2)  # 左边缘
+                cv2.line(out_img, bl_i, br_i, (0, 150, 0), 2)  # 下边缘
+                cv2.line(out_img, br_i, tr_i, (0, 200, 0), 2)  # 右边缘
+                cv2.line(out_img, tr_i, tl_i, (0, 255, 0), 2)  # 上边缘
+                
+                # 绘制对角线
+                cv2.line(out_img, tl_i, br_i, (0, 255, 255), 1)  # 主对角线
+                cv2.line(out_img, bl_i, tr_i, (0, 255, 255), 1)  # 副对角线
+
+                # 在中心处标注 DETECTED
+                center_detected = pts3d.mean(axis=0)
+                u_o, v_o = camera2xy(center_detected)
+                u_o = int(max(0, min(w - 1, u_o)))
+                v_o = int(max(0, min(h - 1, v_o)))
+                cv2.putText(out_img, "DETECTED", (u_o + 5, v_o - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
             # 绘制预测的装甲板（基于记录半径的方法）
             if predicted_armors:
                 for i, pred_armor in enumerate(predicted_armors):
-                    raw_pixels = []
-                    for p in pred_armor.camera_pos:
-                        u, v = camera2xy(p)
-                        u = int(max(0, min(w - 1, u)))
-                        v = int(max(0, min(h - 1, v)))
-                        raw_pixels.append((u, v))
-                    if len(raw_pixels) == 4:
-                        tl_f, bl_f, tr_f, br_f = raw_pixels
-                        # 用不同颜色绘制预测的装甲板
-                        # 修正点的顺序以形成正确的矩形而不是8字形
-                        filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
-                        cv2.polylines(out_img, [filt_rect], isClosed=True, color=(255, 0, 255), thickness=2)  # 紫色表示预测
-                        
-                        # 绘制装甲板的对角线
-                        cv2.line(out_img, tl_f, br_f, (0, 255, 255), 1)  # 主对角线
-                        cv2.line(out_img, bl_f, tr_f, (0, 255, 255), 1)  # 副对角线
-                        
-                        # 添加标签
-                        center_u = int(np.mean([tl_f[0], bl_f[0], br_f[0], tr_f[0]]))
-                        center_v = int(np.mean([tl_f[1], bl_f[1], br_f[1], tr_f[1]]))
-                        cv2.putText(out_img, f"PREDICTED#{i}", (center_u, center_v), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-            # 绘制卡尔曼滤波预测的装甲板
+                    pts3d = np.asarray(pred_armor.camera_pos, dtype=float).reshape(-1, 3)
+                    if pts3d.shape[0] != 4:
+                        continue
+
+                    pts2d = [camera2xy(p) for p in pts3d]
+                    pts2d = [
+                        (int(max(0, min(w - 1, u))), int(max(0, min(h - 1, v))))
+                        for (u, v) in pts2d
+                    ]
+
+                    tl_i, bl_i, tr_i, br_i = pts2d
+
+                    # 用亮黄色画矩形表示预测装甲板，增加透明度和填充效果提升3D感
+                    # 创建装甲板区域的半透明填充效果
+                    overlay = out_img.copy()
+                    pts_array = np.array([tl_i, bl_i, br_i, tr_i], dtype=np.int32)  # 正确的点顺序
+                    cv2.fillPoly(overlay, [pts_array], color=(0, 128, 255))  # 半透明填充
+                    cv2.addWeighted(overlay, 0.3, out_img, 0.7, 0, out_img)  # 混合图像
+                    
+                    # 绘制装甲板边界，增强3D效果
+                    cv2.line(out_img, tl_i, bl_i, (0, 100, 255), 2)  # 左边缘
+                    cv2.line(out_img, bl_i, br_i, (0, 150, 255), 2)  # 下边缘
+                    cv2.line(out_img, br_i, tr_i, (0, 200, 255), 2)  # 右边缘
+                    cv2.line(out_img, tr_i, tl_i, (0, 255, 255), 2)  # 上边缘
+                    
+                    # 绘制对角线
+                    cv2.line(out_img, tl_i, br_i, (0, 255, 255), 1)  # 主对角线
+                    cv2.line(out_img, bl_i, tr_i, (0, 255, 255), 1)  # 副对角线
+
+                    # 在中心处标注 PREDICTED#idx
+                    center_pred = pts3d.mean(axis=0)
+                    u_o, v_o = camera2xy(center_pred)
+                    u_o = int(max(0, min(w - 1, u_o)))
+                    v_o = int(max(0, min(h - 1, v_o)))
+                    cv2.putText(out_img, f"PREDICTED#{i}", (u_o + 5, v_o - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            # 绘制卡尔曼滤波预测的装甲板（无论是否在画面中）
             if kf_predicted_armors:
                 for i, pred_armor in enumerate(kf_predicted_armors):
-                    raw_pixels = []
-                    for p in pred_armor.camera_pos:
-                        u, v = camera2xy(p)
-                        u = int(max(0, min(w - 1, u)))
-                        v = int(max(0, min(h - 1, v)))
-                        raw_pixels.append((u, v))
-                    if len(raw_pixels) == 4:
-                        tl_f, bl_f, tr_f, br_f = raw_pixels
-                        # 用不同颜色绘制卡尔曼滤波预测的装甲板
-                        # 修正点的顺序以形成正确的矩形而不是8字形
-                        filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)
-                        cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 255), thickness=2)  # 青色表示KF预测                        
-                        # 绘制装甲板的对角线
-                        cv2.line(out_img, tl_f, br_f, (0, 255, 255), 1)  # 主对角线
-                        cv2.line(out_img, bl_f, tr_f, (0, 255, 255), 1)  # 副对角线
-                        
-                        # 添加标签
-                        center_u = int(np.mean([tl_f[0], bl_f[0], br_f[0], tr_f[0]]))
-                        center_v = int(np.mean([tl_f[1], bl_f[1], br_f[1], tr_f[1]]))
-                        cv2.putText(out_img, f"KF_PREDICT#{i}", (center_u, center_v), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                    pts3d = np.asarray(pred_armor.camera_pos, dtype=float).reshape(-1, 3)
+                    if pts3d.shape[0] != 4:
+                        continue
+
+                    pts2d = [camera2xy(p) for p in pts3d]
+                    pts2d = [
+                        (int(max(0, min(w - 1, u))), int(max(0, min(h - 1, v))))
+                        for (u, v) in pts2d
+                    ]
+
+                    tl_i, bl_i, tr_i, br_i = pts2d
+
+                    # 用亮蓝色画矩形表示卡尔曼滤波预测装甲板，增加透明度和填充效果提升3D感
+                    # 创建装甲板区域的半透明填充效果
+                    overlay = out_img.copy()
+                    pts_array = np.array([tl_i, bl_i, br_i, tr_i], dtype=np.int32)  # 正确的点顺序
+                    cv2.fillPoly(overlay, [pts_array], color=(255, 128, 0))  # 半透明填充
+                    cv2.addWeighted(overlay, 0.3, out_img, 0.7, 0, out_img)  # 混合图像
+                    
+                    # 绘制装甲板边界，增强3D效果
+                    cv2.line(out_img, tl_i, bl_i, (255, 100, 0), 2)  # 左边缘
+                    cv2.line(out_img, bl_i, br_i, (255, 150, 0), 2)  # 下边缘
+                    cv2.line(out_img, br_i, tr_i, (255, 200, 0), 2)  # 右边缘
+                    cv2.line(out_img, tr_i, tl_i, (255, 255, 0), 2)  # 上边缘
+                    
+                    # 绘制对角线
+                    cv2.line(out_img, tl_i, br_i, (255, 255, 0), 1)  # 主对角线
+                    cv2.line(out_img, bl_i, tr_i, (255, 255, 0), 1)  # 副对角线
+
+                    # 在中心处标注 KF_PREDICT#idx
+                    center_pred = pts3d.mean(axis=0)
+                    u_o, v_o = camera2xy(center_pred)
+                    u_o = int(max(0, min(w - 1, u_o)))
+                    v_o = int(max(0, min(h - 1, v_o)))
+                    cv2.putText(out_img, f"KF_PREDICT#{i}", (u_o + 5, v_o - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
             
             # 绘制小车中心点（如果已计算）
             if robot and robot.center_point is not None:
