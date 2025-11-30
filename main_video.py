@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import math
 
 # import onnxruntime as ort
 import torch
@@ -51,6 +52,34 @@ TIMEOUT = 5
 def write1(x, y, z):
     with open('data.txt', 'a') as file:
         file.write(f"{x} {y} {z}\n")
+
+
+def get_armor_angle(armor_center, robot_center):
+    """计算装甲板相对于机器人中心的角度"""
+    if robot_center is None or len(robot_center) < 2:
+        return 0.0
+    
+    # armor_center 应该是 [x, y, z] 格式
+    # robot_center 应该是 [x, z] 格式 (xz平面坐标)
+    dx = armor_center[0] - robot_center[0]
+    dz = armor_center[2] - robot_center[1]  # 注意这里 robot_center[1] 是 z 坐标
+    angle = math.atan2(dz, dx)
+    return angle
+
+
+def assign_tracker_by_angle(angle):
+    """根据角度分配追踪器ID"""
+    # 将角度标准化到 [0, 2π]
+    normalized_angle = (angle + 2 * math.pi) % (2 * math.pi)
+    # 将圆周分为4个象限
+    if 0 <= normalized_angle < math.pi/2:
+        return 0  # 前方
+    elif math.pi/2 <= normalized_angle < math.pi:
+        return 1  # 左侧
+    elif math.pi <= normalized_angle < 3*math.pi/2:
+        return 2  # 后方
+    else:
+        return 3  # 右侧
 
 
 def run(video_path):
@@ -127,7 +156,9 @@ def run(video_path):
             "troop_type": TroopType.INFANTRY,  # 默认兵种
             "smooth_pixels": None,
             "last_detected_frame": -1,  # 上次检测到的帧数
-            "predicted_position": None  # 上次预测的位置
+            "predicted_position": None,  # 上次预测的位置
+            "physical_id": None,  # 物理装甲板ID
+            "last_angle": None  # 上次的角度
         }
     
     # 存储小车的几何信息
@@ -227,6 +258,11 @@ def run(video_path):
             pts = np.array(armor_box.camera_pos).reshape(-1, 2)
             return float(np.mean(pts[:, 0]))
 
+        def get_center_3d(armor_box):
+            """获取装甲板的3D中心点"""
+            pts = np.array(armor_box.camera_pos).reshape(-1, 3)
+            return np.mean(pts, axis=0)
+
         # 本帧中已成功完成 PnP 的装甲板（用于 GuardRobot 计算小车中心）
         guardrobot_candidates = []  # 存储 (detected_armor, area)
 
@@ -259,37 +295,21 @@ def run(video_path):
             
         # 为每个检测到的装甲板更新追踪器
         for armor_idx, (detected_armor, armor_area) in enumerate(guardrobot_candidates):
-            armor_center_x = get_center_x(detected_armor)
+            armor_center_3d = get_center_3d(detected_armor)
+            armor_angle = get_armor_angle(armor_center_3d, center_point)
             
-            # 简单的装甲板匹配逻辑（基于中心x坐标）
-            matched_armor_id = None
-            min_distance = float('inf')
-            
-            # 寻找最接近的追踪器
-            for armor_id, state in armor_trackers.items():
-                distance = abs(state["center_x"] - armor_center_x)
-                if distance < min_distance and distance < 100:  # 阈值可根据需要调整
-                    min_distance = distance
-                    matched_armor_id = armor_id
-            
-            # 如果没有找到足够接近的追踪器，则使用第一个可用的追踪器
-            if matched_armor_id is None:
-                for armor_id, state in armor_trackers.items():
-                    if state["miss_cnt"] > max_miss_frames//2:  # 使用较长时间未匹配的追踪器
-                        matched_armor_id = armor_id
-                        break
-            
-            # 如果还是没有匹配到，则使用第一个追踪器
-            if matched_armor_id is None:
-                matched_armor_id = armor_idx % 4  # 循环使用追踪器0-3
+            # 基于角度分配追踪器
+            assigned_armor_id = assign_tracker_by_angle(armor_angle)
             
             # 更新对应追踪器
-            state = armor_trackers[matched_armor_id]
-            state["center_x"] = armor_center_x
+            state = armor_trackers[assigned_armor_id]
+            state["center_x"] = get_center_x(detected_armor)
             state["color"] = detected_armor.color
             state["troop_type"] = detected_armor.troop_type
             state["miss_cnt"] = 0  # 重置丢失计数
             state["last_detected_frame"] = frame_count  # 记录当前帧数
+            state["physical_id"] = assigned_armor_id  # 设置物理ID
+            state["last_angle"] = armor_angle  # 记录角度
             
             # 为4个角点应用卡尔曼滤波
             kfs = state["kfs"]
@@ -405,76 +425,6 @@ def run(video_path):
             # 合并检测到的装甲板和预测的装甲板
             all_armors_for_tracking = armor_plates + predicted_armors
             
-            # 为所有装甲板（检测到的和预测的）更新追踪器
-            for armor_idx, armor_plate in enumerate(all_armors_for_tracking):
-                armor_center_x = get_center_x(armor_plate)
-                
-                # 使用固定映射将装甲板分配给对应的追踪器
-                assigned_armor_id = armor_idx % 4
-                
-                # 更新对应追踪器
-                state = armor_trackers[assigned_armor_id]
-                state["center_x"] = armor_center_x
-                state["color"] = armor_plate.color
-                state["troop_type"] = armor_plate.troop_type
-                state["miss_cnt"] = 0  # 重置丢失计数
-                state["last_detected_frame"] = frame_count  # 记录当前帧数
-                
-                # 为4个角点应用卡尔曼滤波
-                kfs = state["kfs"]
-                inited = state["inited"]
-                
-                filtered_pixels = []
-                for idx, p in enumerate(armor_plate.camera_pos):
-                    px, py, pz = map(float, p)
-                    
-                    # 计算点的半径和角度（相对于机器人中心点）
-                    r = 0.0
-                    theta = 0.0
-                    omega = 0.0
-                    
-                    # 如果有中心点信息，计算相对半径和角度
-                    if center_point is not None:
-                        center_x, center_z = center_point[0], center_point[1]
-                        # 在xz平面上计算相对位置
-                        dx = px - center_x
-                        dz = pz - center_z
-                        r = np.sqrt(dx*dx + dz*dz)
-                        theta = np.arctan2(dz, dx)
-                    
-                    # 如果有角速度信息，使用它
-                    if angular_velocity_info is not None:
-                        omega, _ = angular_velocity_info
-                    
-                    if not inited[idx]:
-                        kf_point = KF(
-                            state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角速度(1) + 速度(3) = 9维
-                            init_cov=corner_kf_init_cov,
-                            measure_noise=corner_kf_measure_noise,
-                            process_noise=corner_kf_process_noise,
-                            x=px, y=py, z=pz,
-                            r=r, theta=theta, omega=omega,
-                            vx=0.0, vy=0.0, vz=0.0,
-                        )
-                        kf_point.init_kf(dt=dt)
-                        kfs[idx] = kf_point
-                        inited[idx] = True
-                    
-                    kf_point = kfs[idx]
-                    kf_point.predict_next(dt)
-                    kf_point.correct_by_sensor([px, py, pz])
-                    
-                    state_post, _P = kf_point.get_state()
-                    pos_post = state_post[:3].reshape(-1)
-                    
-                    u_f, v_f = camera2xy(pos_post)
-                    u_f = int(max(0, min(w - 1, u_f)))
-                    v_f = int(max(0, min(h - 1, v_f)))
-                    filtered_pixels.append((u_f, v_f))
-                
-                # 保存滤波后的像素坐标
-                state["smooth_pixels"] = filtered_pixels
-
             # 使用卡尔曼滤波器预测装甲板位置
             kf_predicted_armors = []
             
