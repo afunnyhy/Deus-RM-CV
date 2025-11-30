@@ -5,21 +5,22 @@ import numpy as np
 class KalmanFilter:
     """
     3D 常速度模型卡尔曼滤波封装
-    状态: x=[x,y,z,vx,vy,vz]^T
-    量测: z=[x,y,z]^T
+    状态: x=[x,y,z,r,theta,omega,vx,vy,vz]^T （针对单个点的位置、半径、角度、角速度和线速度）
+    量测: z=[x,y,z]^T （单个点的位置测量）
     包含两种实现:
       1) OpenCV 内部 predict/correct
       2) 手写 numpy 版本 (单步调试用)
     """
 
     def __init__(self,
-                 state_dim=6,
+                 state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角速度(1) + 速度(3) = 9维
                  measure_dim=3,
                  init_cov=100.0,
                  measure_noise=1.0,
                  process_noise=1.0,
                  x=0, y=0, z=0,
-                 vx=0, vy=0, vz=0):
+                 vx=0, vy=0, vz=0,
+                 r=0, theta=0, omega=0):
         # 默认参数字典
         self.parameters = {
             'state_dim': state_dim,           # 状态维度
@@ -37,7 +38,7 @@ class KalmanFilter:
         self.process_noise = float(process_noise)
 
         # 状态与协方差
-        self.X = self._make_state_vector(x, y, z, vx, vy, vz)
+        self.X = self._make_state_vector(x, y, z, r, theta, omega, vx, vy, vz)
         self.P = self._make_state_cov(self.init_cov, self.state_dim)
 
         # 模型矩阵 (初始占位)
@@ -53,8 +54,8 @@ class KalmanFilter:
         self._ensure_kf_created()
 
     # ---------------- 矩阵构造(公用) ----------------
-    def _make_state_vector(self, x, y, z, vx, vy, vz):
-        return np.array([[x], [y], [z], [vx], [vy], [vz]], dtype=np.float32)
+    def _make_state_vector(self, x, y, z, r, theta, omega, vx, vy, vz):
+        return np.array([[x], [y], [z], [r], [theta], [omega], [vx], [vy], [vz]], dtype=np.float32)
 
     def _make_state_cov(self, init_cov, n):
         return np.eye(n, dtype=np.float32) * float(init_cov)
@@ -66,15 +67,20 @@ class KalmanFilter:
         H[2, 2] = 1.0
         return H
 
-    def _make_R(self, r, m):
-        return np.eye(m, dtype=np.float32) * float(r)
-
     def _make_F(self, dt):
         dt = float(max(dt, 1e-6))
         F = np.eye(self.state_dim, dtype=np.float32)
-        F[0, 3] = dt
-        F[1, 4] = dt
-        F[2, 5] = dt
+        
+        # 位置更新基于速度: x = x + vx*dt
+        F[0, 6] = dt
+        F[1, 7] = dt
+        F[2, 8] = dt
+        
+        # 角度更新基于角速度: theta = theta + omega*dt
+        F[4, 5] = dt
+        
+        # 半径保持不变（假设匀速圆周运动半径恒定）
+        # 其他状态变量保持默认（恒定）
         return F
 
     def _make_Gamma(self, dt):
@@ -84,9 +90,9 @@ class KalmanFilter:
         G[0, 0] = half_dt2
         G[1, 1] = half_dt2
         G[2, 2] = half_dt2
-        G[3, 0] = dt
-        G[4, 1] = dt
-        G[5, 2] = dt
+        G[6, 0] = dt
+        G[7, 1] = dt
+        G[8, 2] = dt
         return G
 
     def _make_Q_from_Gamma(self, Gamma, q):
@@ -134,8 +140,8 @@ class KalmanFilter:
         self.Q = self._make_Q_from_Gamma(self.GAMMA, self.process_noise)
         self._ensure_kf_created()
 
-    def reset_state(self, x=0, y=0, z=0, vx=0, vy=0, vz=0, init_cov=None):
-        self.X = self._make_state_vector(x, y, z, vx, vy, vz)
+    def reset_state(self, x=0, y=0, z=0, r=0, theta=0, omega=0, vx=0, vy=0, vz=0, init_cov=None):
+        self.X = self._make_state_vector(x, y, z, r, theta, omega, vx, vy, vz)
         if init_cov is not None:
             self.P = self._make_state_cov(init_cov, self.state_dim)
         self._ensure_kf_created()

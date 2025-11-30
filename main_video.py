@@ -271,6 +271,9 @@ def run(video_path):
                 except Exception as e:
                     print(f"[Center] Failed to predict center from single armor: {e}")
             
+            # 更新装甲板追踪器，传入角速度信息
+            robot.update_armor_trackers(dt, h, w, camera2xy, angular_velocity_info)
+            
             # 如果只检测到一个装甲板且已记录初始半径，则进行预测
             predicted_armors = []
             if len(armor_plates) == 1 and len(robot.recorded_radii) >= 2:
@@ -281,7 +284,9 @@ def run(video_path):
                 except Exception as e:
                     print(f"[Prediction] Failed to predict other armors: {e}")
             
-            # 直接绘制装甲板，不使用卡尔曼滤波
+            # 使用卡尔曼滤波器预测装甲板位置
+            kf_predicted_armors = robot.predict_armor_positions(dt, angular_velocity_info)
+            
             # 绘制实际检测到的装甲板
             for armor_plate in armor_plates:
                 raw_pixels = []
@@ -296,7 +301,7 @@ def run(video_path):
                 filt_rect = np.array([tl_f, bl_f, tr_f, br_f], dtype=np.int32).reshape(-1, 1, 2)
                 cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
                 
-            # 绘制预测的装甲板（如果有）
+            # 绘制预测的装甲板（基于记录半径的方法）
             if predicted_armors:
                 for i, pred_armor in enumerate(predicted_armors):
                     raw_pixels = []
@@ -316,6 +321,27 @@ def run(video_path):
                         center_v = int(np.mean([tl_f[1], bl_f[1], tr_f[1], br_f[1]]))
                         cv2.putText(out_img, f"PREDICTED#{i}", (center_u, center_v), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
+            
+            # 绘制卡尔曼滤波预测的装甲板
+            if kf_predicted_armors:
+                for i, pred_armor in enumerate(kf_predicted_armors):
+                    raw_pixels = []
+                    for p in pred_armor.camera_pos:
+                        u, v = camera2xy(p)
+                        u = int(max(0, min(w - 1, u)))
+                        v = int(max(0, min(h - 1, v)))
+                        raw_pixels.append((u, v))
+                    if len(raw_pixels) == 4:
+                        tl_f, bl_f, tr_f, br_f = raw_pixels
+                        # 用不同颜色绘制卡尔曼滤波预测的装甲板
+                        filt_rect = np.array([tl_f, bl_f, tr_f, br_f], dtype=np.int32).reshape(-1, 1, 2)
+                        cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 255), thickness=2)  # 青色表示KF预测
+                        
+                        # 添加标签
+                        center_u = int(np.mean([tl_f[0], bl_f[0], tr_f[0], br_f[0]]))
+                        center_v = int(np.mean([tl_f[1], bl_f[1], tr_f[1], br_f[1]]))
+                        cv2.putText(out_img, f"KF_PREDICT#{i}", (center_u, center_v), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             
             # 绘制小车中心点（如果已计算）
             if robot and robot.center_point is not None:

@@ -620,7 +620,7 @@ class GuardRobot:
         pts = np.array(armor.camera_pos).reshape(-1, 3)
         return float(np.mean(pts[:, 0]))
 
-    def update_armor_trackers(self, dt: float, h: int, w: int, camera2xy_func=None):
+    def update_armor_trackers(self, dt: float, h: int, w: int, camera2xy_func=None, angular_velocity_info=None):
         """
         更新装甲板追踪器
         
@@ -629,13 +629,14 @@ class GuardRobot:
         h: 图像高度
         w: 图像宽度
         camera2xy_func: 相机坐标到像素坐标的转换函数
+        angular_velocity_info: 角速度信息 (angular_velocity, rotation_axis)
         """
         # 重置所有追踪器的丢失计数
         for armor_id in self.armor_trackers:
             self.armor_trackers[armor_id]["miss_cnt"] = 0
             
         # 为每个装甲板创建或更新追踪器
-        for armor in self.armor_plate:
+        for armor_idx, armor in enumerate(self.armor_plate):
             armor_center_x = self.get_center_x(armor)
             
             # 简单的装甲板匹配逻辑（基于中心x坐标）
@@ -673,12 +674,32 @@ class GuardRobot:
             for idx, p in enumerate(armor.camera_pos):
                 px, py, pz = map(float, p)
                 
+                # 计算点的半径和角度（相对于机器人中心点）
+                r = 0.0
+                theta = 0.0
+                omega = 0.0
+                
+                # 如果有中心点信息，计算相对半径和角度
+                if self.center_point is not None:
+                    center_x, center_z = self.center_point[0], self.center_point[1]
+                    # 在xz平面上计算相对位置
+                    dx = px - center_x
+                    dz = pz - center_z
+                    r = np.sqrt(dx*dx + dz*dz)
+                    theta = np.arctan2(dz, dx)
+                
+                # 如果有角速度信息，使用它
+                if angular_velocity_info is not None:
+                    omega, _ = angular_velocity_info
+                
                 if not inited[idx]:
                     kf_point = KF(
+                        state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角速度(1) + 速度(3) = 9维
                         init_cov=self.corner_kf_init_cov,
                         measure_noise=self.corner_kf_measure_noise,
                         process_noise=self.corner_kf_process_noise,
                         x=px, y=py, z=pz,
+                        r=r, theta=theta, omega=omega,
                         vx=0.0, vy=0.0, vz=0.0,
                     )
                     kf_point.init_kf(dt=dt)
@@ -704,6 +725,46 @@ class GuardRobot:
             
             # 保存滤波后的像素坐标
             self.armor_trackers[matched_armor_id]["smooth_pixels"] = filtered_pixels
+
+    def predict_armor_positions(self, dt: float, angular_velocity_info=None):
+        """
+        使用卡尔曼滤波器预测装甲板位置
+        
+        参数:
+        dt: 时间间隔
+        angular_velocity_info: 角速度信息 (angular_velocity, rotation_axis)
+        
+        返回:
+        predicted_armors: 预测的装甲板列表
+        """
+        predicted_armors = []
+        
+        # 遍历所有追踪器
+        for armor_id, state in self.armor_trackers.items():
+            kfs = state["kfs"]
+            predicted_points = []
+            
+            # 对每个角点进行预测
+            for idx, kf in enumerate(kfs):
+                if kf is not None:
+                    # 预测下一个状态
+                    pred = kf.predict_next(dt)
+                    # 获取预测的位置
+                    pred_pos = pred[:3].reshape(-1)
+                    predicted_points.append(pred_pos)
+            
+            # 创建预测的装甲板对象
+            if len(predicted_points) == 4:
+                predicted_armor = ArmorPlate(
+                    points=np.array(predicted_points),
+                    color=state["color"],
+                    troop_type=state["troop_type"],
+                    area=0,  # 面积暂时设为0
+                    confident=0.5  # 置信度设为中等
+                )
+                predicted_armors.append(predicted_armor)
+                
+        return predicted_armors
 
     def _camera2xy(self, pos, h, w):
         """
