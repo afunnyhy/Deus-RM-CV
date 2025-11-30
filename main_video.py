@@ -405,6 +405,76 @@ def run(video_path):
             # 合并检测到的装甲板和预测的装甲板
             all_armors_for_tracking = armor_plates + predicted_armors
             
+            # 为所有装甲板（检测到的和预测的）更新追踪器
+            for armor_idx, armor_plate in enumerate(all_armors_for_tracking):
+                armor_center_x = get_center_x(armor_plate)
+                
+                # 使用固定映射将装甲板分配给对应的追踪器
+                assigned_armor_id = armor_idx % 4
+                
+                # 更新对应追踪器
+                state = armor_trackers[assigned_armor_id]
+                state["center_x"] = armor_center_x
+                state["color"] = armor_plate.color
+                state["troop_type"] = armor_plate.troop_type
+                state["miss_cnt"] = 0  # 重置丢失计数
+                state["last_detected_frame"] = frame_count  # 记录当前帧数
+                
+                # 为4个角点应用卡尔曼滤波
+                kfs = state["kfs"]
+                inited = state["inited"]
+                
+                filtered_pixels = []
+                for idx, p in enumerate(armor_plate.camera_pos):
+                    px, py, pz = map(float, p)
+                    
+                    # 计算点的半径和角度（相对于机器人中心点）
+                    r = 0.0
+                    theta = 0.0
+                    omega = 0.0
+                    
+                    # 如果有中心点信息，计算相对半径和角度
+                    if center_point is not None:
+                        center_x, center_z = center_point[0], center_point[1]
+                        # 在xz平面上计算相对位置
+                        dx = px - center_x
+                        dz = pz - center_z
+                        r = np.sqrt(dx*dx + dz*dz)
+                        theta = np.arctan2(dz, dx)
+                    
+                    # 如果有角速度信息，使用它
+                    if angular_velocity_info is not None:
+                        omega, _ = angular_velocity_info
+                    
+                    if not inited[idx]:
+                        kf_point = KF(
+                            state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角速度(1) + 速度(3) = 9维
+                            init_cov=corner_kf_init_cov,
+                            measure_noise=corner_kf_measure_noise,
+                            process_noise=corner_kf_process_noise,
+                            x=px, y=py, z=pz,
+                            r=r, theta=theta, omega=omega,
+                            vx=0.0, vy=0.0, vz=0.0,
+                        )
+                        kf_point.init_kf(dt=dt)
+                        kfs[idx] = kf_point
+                        inited[idx] = True
+                    
+                    kf_point = kfs[idx]
+                    kf_point.predict_next(dt)
+                    kf_point.correct_by_sensor([px, py, pz])
+                    
+                    state_post, _P = kf_point.get_state()
+                    pos_post = state_post[:3].reshape(-1)
+                    
+                    u_f, v_f = camera2xy(pos_post)
+                    u_f = int(max(0, min(w - 1, u_f)))
+                    v_f = int(max(0, min(h - 1, v_f)))
+                    filtered_pixels.append((u_f, v_f))
+                
+                # 保存滤波后的像素坐标
+                state["smooth_pixels"] = filtered_pixels
+
             # 使用卡尔曼滤波器预测装甲板位置
             kf_predicted_armors = []
             
@@ -417,21 +487,9 @@ def run(video_path):
                 
                 # 对每个角点进行预测
                 for idx, kf in enumerate(kfs):
-                    # 如果该KF尚未初始化，则创建一个新的
+                    # 如果该KF尚未初始化，则跳过
                     if not inited[idx]:
-                        # 创建一个默认的KF，后续会在有真实数据时更新
-                        kf_point = KF(
-                            state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角度(1) + 速度(3) = 9维
-                            init_cov=corner_kf_init_cov,
-                            measure_noise=corner_kf_measure_noise,
-                            process_noise=corner_kf_process_noise,
-                            x=0.0, y=0.0, z=0.0,
-                            r=0.0, theta=0.0, omega=0.0,
-                            vx=0.0, vy=0.0, vz=0.0,
-                        )
-                        kf_point.init_kf(dt=dt)
-                        kfs[idx] = kf_point
-                        inited[idx] = True
+                        continue
                     
                     if kf is not None:
                         # 预测下一个状态
@@ -453,7 +511,7 @@ def run(video_path):
                     predicted_armor.armor_id = armor_id
                     kf_predicted_armors.append(predicted_armor)
                     print(f"[KF_DEBUG] Added KF prediction for armor_id {armor_id}")
-                else:
+                elif len(predicted_points) > 0:
                     print(f"[KF_DEBUG] Skipped KF prediction for armor_id {armor_id}, only {len(predicted_points)} points")
             
             # 绘制实际检测到的装甲板（绿色）
@@ -611,21 +669,9 @@ def run(video_path):
                 
                 # 对每个角点进行预测
                 for idx, kf in enumerate(kfs):
-                    # 如果该KF尚未初始化，则创建一个新的
+                    # 如果该KF尚未初始化，则跳过
                     if not inited[idx]:
-                        # 创建一个默认的KF，后续会在有真实数据时更新
-                        kf_point = KF(
-                            state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角度(1) + 速度(3) = 9维
-                            init_cov=corner_kf_init_cov,
-                            measure_noise=corner_kf_measure_noise,
-                            process_noise=corner_kf_process_noise,
-                            x=0.0, y=0.0, z=0.0,
-                            r=0.0, theta=0.0, omega=0.0,
-                            vx=0.0, vy=0.0, vz=0.0,
-                        )
-                        kf_point.init_kf(dt=dt)
-                        kfs[idx] = kf_point
-                        inited[idx] = True
+                        continue
                     
                     if kf is not None:
                         # 预测下一个状态
@@ -647,11 +693,12 @@ def run(video_path):
                     predicted_armor.armor_id = armor_id
                     kf_predicted_armors.append(predicted_armor)
                     print(f"[KF_DEBUG] Added KF prediction for armor_id {armor_id}")
-                else:
+                elif len(predicted_points) > 0:
                     print(f"[KF_DEBUG] Skipped KF prediction for armor_id {armor_id}, only {len(predicted_points)} points")
             
             # 绘制卡尔曼滤波预测的装甲板（无论是否在画面中）
             if kf_predicted_armors:
+                print(f"[KF_DEBUG] Total KF predictions to display: {len(kf_predicted_armors)}")
                 for i, pred_armor in enumerate(kf_predicted_armors):
                     pts3d = np.asarray(pred_armor.camera_pos, dtype=float).reshape(-1, 3)
                     if pts3d.shape[0] != 4:
