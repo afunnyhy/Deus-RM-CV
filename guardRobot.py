@@ -498,6 +498,7 @@ class GuardRobot:
             dx = armor_center[0] - center_x
             dz = armor_center[2] - center_z
             radius = np.sqrt(dx*dx + dz*dz)
+            print("Recorded radius:", radius)
             self.recorded_radii.append(radius)
             
             # 记录装甲板尺寸信息
