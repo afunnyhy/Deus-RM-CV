@@ -96,7 +96,7 @@ class PnPSolver:
         else:  # 如果PnP求解失败
             armor = None
         # 返回值：是否成功，装甲板对象，输出图像
-        return ret, armor, out_img
+        return ret, armor, out_img,object_points_cam
 
     def set_pitch_angle(self, angle):
         """
