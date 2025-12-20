@@ -5,1002 +5,621 @@ from all_type import ArmorPlate, Color, TroopType
 from KalmanFilter import KalmanFilter as KF
 
 
+def find_center_symmetric_point_with_2d_center(center_2d, point_3d):
+    """
+    根据二维中心点（x,z）和三维点，找到中心对称点，中心的y值采用三维点的y值
+
+    参数
+    ------
+    center_2d: tuple/list/ndarray, shape=(2,)
+        中心点的二维坐标 [x, z]
+    point_3d: tuple/list/ndarray, shape=(3,)
+        目标点的三维坐标 [x, y, z]
+
+    返回
+    ------
+    symmetric_point: ndarray, shape=(3,)
+        中心对称点的三维坐标 [x, y, z]
+    """
+    # 确保输入为numpy数组
+    center = np.array(center_2d, dtype=float)
+    point = np.array(point_3d, dtype=float)
+
+    # 检查输入维度
+    if center.shape != (2,):
+        raise ValueError("中心点必须是二维坐标 [x, z]")
+    if point.shape != (3,):
+        raise ValueError("目标点必须是三维坐标 [x, y, z]")
+
+    # 构建三维中心点：使用二维中心点的x,z坐标，y值采用三维点的y值
+    center_3d = np.array([center[0], point[1], center[1]], dtype=float)
+
+    # 计算中心对称点：symmetric_point = 2 * center_3d - point
+    symmetric_point = 2 * center_3d - point
+
+    return symmetric_point
+
+def get_value_by_closest_key(dict_data, target_key, default_value=0.0):
+    """
+    从字典中找到与目标键最接近的键，并返回其对应的值
+    兼容字典键为：浮点数、整数、字符串类型的数值（如"0.1088"）
+
+    Args:
+        dict_data (dict): 待查找的字典（键为数值或字符串类型的数值）
+        target_key (float/int/str): 目标键（会被转换为浮点数计算）
+        default_value (any): 字典为空时返回的默认值（可自定义，如0.0、None等）
+
+    Returns:
+        any: 最接近键对应的值，或字典为空时返回默认值
+    """
+    target=target_key
+    # 2. 获取字典的键列表，若字典为空则返回默认值
+    dict_keys = list(dict_data.keys())
+    if not dict_keys:
+        # print(f"警告：输入的字典为空，返回默认值 {default_value}")
+        return default_value
+
+    # 3. 找到与目标键最接近的键（核心逻辑：计算差值的绝对值，取最小值对应的键）
+    def calculate_diff(key):
+        """内部函数：计算键与目标键的差值绝对值"""
+        try:
+            return abs(float(key) - target)
+        except (ValueError, TypeError):
+            # 若字典中的键无法转换为浮点数，返回极大值（使其不被选中）
+            return float('inf')
+
+    closest_key = min(dict_keys, key=calculate_diff)
+
+    # 4. 打印调试信息（可选，可注释掉）
+    diff = calculate_diff(closest_key)
+    # print(f"提示：目标键 {target_key} 不存在，使用最接近的键 {closest_key}（差值：{diff:.6f}）")
+
+    # 5. 返回最接近键对应的值
+    return dict_data[closest_key]
+
+
+def get_key_by_closest_value(dict_data, target_value, default_key=None):
+    """
+    从字典中找到与目标值最接近的值，并返回其对应的键
+    兼容字典值为：浮点数、整数、字符串类型的数值（如"0.1088"）
+
+    Args:
+        dict_data (dict): 待查找的字典（值为数值或字符串类型的数值）
+        target_value (float/int/str): 目标值（会被转换为浮点数计算）
+        default_key (any): 字典为空时返回的默认键（可自定义，如None、0等）
+
+    Returns:
+        any: 最接近值对应的键，或字典为空时返回默认键
+    """
+    target = target_value
+
+    # 2. 获取字典的值列表，若字典为空则返回默认键
+    dict_values = list(dict_data.values())
+    if not dict_values:
+        # print(f"警告：输入的字典为空，返回默认键 {default_key}")
+        return default_key
+
+    # 3. 找到与目标值最接近的值（核心逻辑：计算差值的绝对值，取最小值对应的值）
+    def calculate_diff(value):
+        """内部函数：计算值与目标值的差值绝对值"""
+        try:
+            return abs(float(value) - target)
+        except (ValueError, TypeError):
+            # 若字典中的值无法转换为浮点数，返回极大值（使其不被选中）
+            return float('inf')
+
+    # 找到最接近的值
+    closest_value = min(dict_values, key=calculate_diff)
+
+    # 4. 根据最接近的值找到对应的键（可能有多个键对应同一个值）
+    closest_keys = [key for key, value in dict_data.items() if value == closest_value]
+
+    # 如果有多个键对应同一个值，返回第一个找到的键
+    closest_key = closest_keys[0] if closest_keys else default_key
+
+    # 5. 打印调试信息（可选，可注释掉）
+    diff = calculate_diff(closest_value)
+    # print(f"提示：目标值 {target_value} 不存在，使用最接近的值 {closest_value}（差值：{diff:.6f}），对应键：{closest_key}")
+
+    # 6. 返回最接近值对应的键
+    return closest_key
+
+class TestRobotCenter:
+    predict_r_h = {}
+
+    def __init__(self, robot_armor_coordinate=None):
+        if robot_armor_coordinate is None:
+            robot_armor_coordinate = []
+        self.robot_armor_coordinate = robot_armor_coordinate  # 四个装甲板的四个角点对应的坐标，shape=(4,4,3)
+        self.armor_center_point=[]
+
+    def get_robot_center_by_two_armor(self, idx1=0, idx2=1):
+        """通过前后两块装甲板的法线，在 xz 平面上求它们交点，作为机器人中心的二维坐标。
+
+        返回
+        ------
+        center_xz: ndarray, shape=(2,)
+            机器人在 xz 平面上的估计中心 [x, z]，若直线平行或退化则返回 None。
+        """
+        self.armor_center_point.clear()
+        c1, n1, _ = self.get_armor_normal_vector(self.robot_armor_coordinate[idx1])
+        c2, n2, _ = self.get_armor_normal_vector(self.robot_armor_coordinate[idx2])
+        # 若某一块装甲板无法计算法线，直接返回 None
+        if c1 is None or c2 is None:
+            return None
+        # 将三维直线投影到 xz 平面: 只保留 x 和 z 分量 (索引 0 和 2)
+        # 三维参数直线: L(t) = c + t * n
+        # 投影到 xz 后: L_xz(t) = [c_x, c_z] + t * [n_x, n_z]
+        p1_2d = np.array([c1[0], c1[2]], dtype=float)
+        d1_2d = np.array([n1[0], n1[2]], dtype=float)
+
+        p2_2d = np.array([c2[0], c2[2]], dtype=float)
+        d2_2d = np.array([n2[0], n2[2]], dtype=float)
+
+        # 求两条二维直线的交点
+        # p1 + t*d1 = p2 + s*d2
+        A = np.array([
+            [d1_2d[0], -d2_2d[0]],
+            [d1_2d[1], -d2_2d[1]],
+        ], dtype=float)
+        b = p2_2d - p1_2d
+
+        detA = np.linalg.det(A)
+        eps = 1e-6
+        if abs(detA) < eps:
+            # 两条线在 xz 平面上平行或几乎平行，无唯一交点
+            return None
+
+        t, s = np.linalg.solve(A, b)
+        center_xz = p1_2d + t * d1_2d
+        r1 = np.linalg.norm(center_xz - p1_2d)
+        r2 = np.linalg.norm(center_xz - p2_2d)
+        TestRobotCenter.predict_r_h[float(c1[1])] = r1
+        TestRobotCenter.predict_r_h[float(c2[1])] = r2
+        # print("predict_r_h的所有键（装甲板中心点高度）：", list(self.predict_r_h.keys()))
+        print(self.predict_r_h)
+        # print("center_xz:", center_xz)
+        return np.array([center_xz[0],0.7,center_xz[1]], dtype=float)
+
+    def get_robot_center_by_one_armor(self, idx=0):
+        """通过单块装甲板计算机器人中心。"""
+        self.armor_center_point.clear()
+        center_armor,_,_=self.get_armor_normal_vector(self.robot_armor_coordinate[idx])
+        print(self.predict_r_h)
+        armor_r = get_value_by_closest_key(TestRobotCenter.predict_r_h, center_armor[1])
+        center_armor = center_armor + np.array([0, 0, armor_r])
+        # print("center_armor:", center_armor)
+        return center_armor
+
+    def get_armor_normal_vector(self, four_armor_points):
+        """计算装甲板的法向量以及经过装甲板中心且方向为法向量的直线参数方程。
+
+        参数
+        ------
+        four_armor_points: ndarray, shape=(4, 3)
+            四个角点的三维坐标，顺序为 p1, p2, p3, p4。
+
+        返回
+        ------
+        center_point: ndarray, shape=(3,)
+            装甲板中心点坐标。
+        normal_unit: ndarray, shape=(3,)
+            归一化后的法向量。
+        line_func: callable
+            直线参数方程 L(t) = center_point + t * normal_unit。
+        """
+        p1, p2, p3, p4 = four_armor_points
+        p1=np.array(p1)
+        p2=np.array(p2)
+        p3=np.array(p3)
+        p4=np.array(p4)
+        # 装甲板中心点
+        center_point = (p1 + p2 + p3 + p4) / 4
+        self.armor_center_point.append(center_point.tolist())
+        # 未归一化的法向量（由装甲板上的两条边叉乘得到）
+        normal_vector = np.cross(p2 - p1, p3 - p1)
+        # 防止除零，若四点共线或退化则返回 None
+        norm = np.linalg.norm(normal_vector)
+        if norm == 0:
+            return None, None, None
+        # 归一化法向量
+        normal_unit = normal_vector / norm
+        # 直线参数方程: L(t) = center_point + t * normal_unit
+        line_func = lambda t: center_point + t * normal_unit
+        return center_point, normal_unit, line_func
+
+
 class GuardRobot:
-    def __init__(self, all_armor_plate: List):
-        """根据若干装甲板估计小车相关几何信息（相机坐标系）。
+    predict_r_h = TestRobotCenter.predict_r_h
 
-        参数
-        ------
-        all_armor_plate : List[ArmorPlate]
-            当前帧中可用的装甲板列表，每个 ArmorPlate 中应包含 4 个在相机坐标系下的 3D 角点 camera_pos。
+    def __init__(self, armor_plates=None, color: Color = None, troop_type: TroopType = None):
+        if armor_plates is None:
+            armor_plates = []
 
-        约定
-        ------
-        - 至少需要 2 块装甲板，几何上才能稳定估计出"小车中心"等信息；
-        - 目前 get_center_from_normals 和 calculate_another_armor_by_center 只使用前两块装甲板；
-        - 坐标系为相机坐标系：x 向右, y 向下, z 朝前（与工程中 PnP 得到的一致）。
-        """
-        if len(all_armor_plate) < 1:
-            raise ValueError("all_armor_plate 至少需要 1 块装甲板")
-        self.armor_plate = all_armor_plate
-
-        # 代表整车中心的 3D 点（相机坐标系）
-        self.center_point = None
-        # 两个装甲板法平面的交线上的一点以及方向（目前保留, 用于旧接口）
-        self.line_point = None
-        self.line_dir = None
-        # 每块装甲板所在平面的方程参数 [a,b,c,d]（ax+by+cz+d=0）
-        self.normal_plane = []
-        # 每块装甲板中心（4 个角点的算术平均）
-        self.armor_plate_center = []
-        # 每块装甲板的法向量（通过 3D 角点叉乘得到）
-        self.normal_vector = []
-        
-        # 装甲板高度到旋转半径的映射
-        self.height_to_radius = {}
-        
-        # 存储首次观测到的两个装甲板的半径，用于后续预测
-        self.recorded_radii = []
-        
-        # 记录不同装甲板的尺寸信息：{height: (armor_type, length, width, top_z_diff, bottom_z_diff)}
-        self.armor_dimensions = {}
-        
-        # 装甲板追踪器字典
-        self.armor_trackers: Dict[int, Dict[str, Any]] = {}
-        
-        # 卡尔曼滤波器参数
-        self.corner_kf_init_cov = 1e3
-        self.corner_kf_measure_noise = 0.15
-        self.corner_kf_process_noise = 0.2
-        self.max_miss_frames = 8
-        
-        # 装甲板ID映射，用于追踪装甲板
-        self.armor_id_mapping = {}  # 用于跟踪装甲板的身份
-        
-        # 帧计数器
-        self.frame_count = 0
-        
-        # === SENSITIVITY IMPROVEMENT SUGGESTION ===
-        # 添加配置参数以改善半径计算和选择的敏感性
-        # 1. 高度匹配容差：用于确定两个装甲板是否属于同一高度组
-        self.height_tolerance = 0.05  # 可根据实际情况调整
-        # 2. 半径变化率限制：防止由于噪声导致的半径剧烈变化
-        self.max_radius_change_rate = 0.01  # 最大10%的变化率
-        # 3. 平滑因子：用于平滑半径计算的历史权重
-        self.radius_smoothing_factor = 0.2
-        # 范围0-1，越大越依赖历史值
-
-    def update_armor_plates(self, new_armor_plates: List):
-        """
-        动态更新装甲板信息
-        
-        参数:
-        new_armor_plates: 新的装甲板列表
-        """
-        self.frame_count += 1
-        self.armor_plate = new_armor_plates
-        
-        # 清除旧的计算结果
-        self.armor_plate_center.clear()
-        self.normal_vector.clear()
-        self.normal_plane.clear()
-        
-        # 重新计算装甲板中心和法向量
-        if len(new_armor_plates) > 0:
-            self.find_armor_center()
-            self.find_armor_normal_vector()
-            self.find_armor_normal_plane()
-
-    def match_armor_plates(self, new_armor_plates: List):
-        """
-        匹配新旧装甲板，维护装甲板身份
-        
-        参数:
-        new_armor_plates: 新检测到的装甲板列表
-        
-        返回:
-        matched_pairs: 匹配对列表 [(old_index, new_index), ...]
-        unmatched_new: 未匹配的新装甲板索引列表
-        unmatched_old: 未匹配的旧装甲板索引列表
-        """
-        if not self.armor_plate:
-            # 如果之前没有装甲板，所有新装甲板都是未匹配的
-            return [], list(range(len(new_armor_plates))), []
-        
-        matched_pairs = []
-        unmatched_new = list(range(len(new_armor_plates)))
-        unmatched_old = list(range(len(self.armor_plate)))
-        
-        # 简单的基于中心点x坐标的匹配
-        for new_idx, new_armor in enumerate(new_armor_plates):
-            new_center_x = self.get_center_x(new_armor)
-            
-            best_match_idx = None
-            best_distance = float('inf')
-            
-            for old_idx in unmatched_old[:]:  # 使用副本避免修改循环中的列表
-                old_armor = self.armor_plate[old_idx]
-                old_center_x = self.get_center_x(old_armor)
-                
-                distance = abs(new_center_x - old_center_x)
-                if distance < best_distance and distance < 50:  # 阈值可根据需要调整
-                    best_distance = distance
-                    best_match_idx = old_idx
-            
-            if best_match_idx is not None:
-                matched_pairs.append((best_match_idx, new_idx))
-                unmatched_old.remove(best_match_idx)
-                unmatched_new.remove(new_idx)
-        
-        return matched_pairs, unmatched_new, unmatched_old
-
-    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
-    # ISSUE: 匹配过程仅基于x坐标，忽略了y和z坐标信息，且阈值固定
-    # POTENTIAL PROBLEMS:
-    # 1. 当装甲板在x方向重叠时，容易产生错误匹配
-    # 2. 固定阈值不能适应不同距离下的匹配需求
-    # SOLUTION SUGGESTIONS:
-    # 1. 使用三维空间距离而非单一维度距离
-    # 2. 实现自适应阈值，根据距离动态调整匹配阈值
-    # 3. 引入外观特征匹配（如颜色、纹理）提高匹配准确性
-
-    def find_armor_normal_vector(self):
-        """根据装甲板的 4 个 3D 角点求平面法向量。
-
-        约定 camera_pos 点序：
-        - [0] top_left
-        - [1] bottom_left
-        - [2] top_right
-        - [3] bottom_right
-
-        法向量计算
-        ------
-        使用 top_left->top_right 与 top_left->bottom_left 的叉乘：
-            n = (top_right - top_left) × (bottom_left - top_left)
-        然后单位化。
-        """
-        self.normal_vector.clear()
-        for armor in self.armor_plate:
-            top_left = np.asarray(armor.camera_pos[0], dtype=np.float32)
-            top_right = np.asarray(armor.camera_pos[2], dtype=np.float32)
-            bottom_left = np.asarray(armor.camera_pos[1], dtype=np.float32)
-            # bottom_right = np.asarray(armor.camera_pos[3], dtype=np.float32)
-
-            # 由两个非共线边得到平面法向量
-            n = np.cross(top_right - top_left, bottom_left - top_left)
-            if np.linalg.norm(n) <= 1e-5:
-                # 如果三点几乎共线, 无法定义一个稳定的法向量
-                raise ValueError("法向量计算异常，可能是点共线")
-            n = n / np.linalg.norm(n)
-            self.normal_vector.append(n)
-
-    def find_armor_center(self):
-        """根据 4 个 3D 角点求装甲板中心点（简单平均）。
-
-        注意
-        ------
-        - 这里的中心只是几何上的重心, 不带任何物理含义；
-        - 该中心常被用作"装甲板中心 -> 车中心"的连线起点。
-        """
-        self.armor_plate_center.clear()
-        for armor in self.armor_plate:
-            top_left = np.asarray(armor.camera_pos[0], dtype=np.float32)
-            top_right = np.asarray(armor.camera_pos[2], dtype=np.float32)
-            bottom_left = np.asarray(armor.camera_pos[1], dtype=np.float32)
-            bottom_right = np.asarray(armor.camera_pos[3], dtype=np.float32)
-            center = (top_left + top_right + bottom_left + bottom_right) / 4.0
-            self.armor_plate_center.append(center)
-
-    def find_armor_normal_plane(self):
-        """对每块装甲板, 根据其中心点和法向量构造平面方程 ax+by+cz+d=0。"""
-        self.normal_plane.clear()
-
-        def plane_from_point_normal(point, normal, normalize=True):
-            point = np.asarray(point, dtype=float).reshape(3)
-            normal = np.asarray(normal, dtype=float).reshape(3)
-            if normalize:
-                n_norm = np.linalg.norm(normal)
-                if n_norm < 1e-12:
-                    raise ValueError("法向量长度为 0，无法确定平面")
-                normal = normal / n_norm
-            a, b, c = normal
-            # 令点在平面上满足: a*x0 + b*y0 + c*z0 + d = 0 -> d = -n·p
-            d = -np.dot(normal, point)
-            return [a, b, c, d]
-
-        for center, n in zip(self.armor_plate_center, self.normal_vector):
-            self.normal_plane.append(plane_from_point_normal(center, n))
-
-    def intersect_two_planes(self, p1, p2, eps=1e-8):
-        """求两平面交线的一点和方向。
-
-        参数
-        ------
-        p1, p2 : [a,b,c,d]
-            两个平面方程 ax+by+cz+d=0 的参数。
-
-        返回
-        ------
-        (has_line, point, direction)
-            has_line : bool, 是否存在唯一交线；
-            point : ndarray(3,), 交线上的一点；
-            direction : ndarray(3,), 交线方向单位向量。
-        """
-        a1, b1, c1, d1 = p1
-        a2, b2, c2, d2 = p2
-
-        n1 = np.array([a1, b1, c1], dtype=float)
-        n2 = np.array([a2, b2, c2], dtype=float)
-
-        # 交线方向 = 两法线叉乘
-        direction = np.cross(n1, n2)
-        if np.linalg.norm(direction) < eps:
-            # 法向量平行 -> 平面平行或重合, 没有唯一交线
-            return False, None, None
-
-        direction = direction / np.linalg.norm(direction)
-
-        # 在三维中, 任意两平面交线可以通过给某个坐标分量固定值, 解 2x2 线性方程得到一个交点。
-        def solve_with_fixed(var_idx, var_value):
-            # var_idx: 固定的坐标索引 (0:x,1:y,2:z)
-            unknown_idx = [i for i in range(3) if i != var_idx]
-
-            # 平面1: n1·[x,y,z] + d1 = 0
-            coeffs1 = [n1[unknown_idx[0]], n1[unknown_idx[1]]]
-            rhs1 = -d1 - n1[var_idx] * var_value
-
-            # 平面2: n2·[x,y,z] + d2 = 0
-            coeffs2 = [n2[unknown_idx[0]], n2[unknown_idx[1]]]
-            rhs2 = -d2 - n2[var_idx] * var_value
-
-            A = np.array([coeffs1, coeffs2], dtype=float)
-            b_vec = np.array([rhs1, rhs2], dtype=float)
-
-            if abs(np.linalg.det(A)) < eps:
-                # 该固定方式下矩阵不可逆, 换一个坐标固定
-                return None
-
-            sol = np.linalg.solve(A, b_vec)
-            vals = {var_idx: var_value, unknown_idx[0]: sol[0], unknown_idx[1]: sol[1]}
-            x, y, z = vals[0], vals[1], vals[2]
-            return np.array([x, y, z], dtype=float)
-
-        # 依次尝试固定 z=0, y=0, x=0 求解一个交点
-        point = solve_with_fixed(2, 0.0)
-        if point is None:
-            point = solve_with_fixed(1, 0.0)
-        if point is None:
-            point = solve_with_fixed(0, 0.0)
-        if point is None:
-            return False, None, None
-
-        return True, point, direction
-
-    def get_line_point_and_dir(self):
-        """返回两装甲板法平面的交线的一点和方向向量（相机坐标系）。
-
-        使用前两块装甲板：
-        1. 计算每块装甲板的法向量；
-        2. 计算每块装甲板的中心点；
-        3. 由中心点和法向量构造两个平面方程；
-        4. 求出两平面交线。
-
-        返回
-        ------
-        (point, direction)
-            point : ndarray(3,), 交线上任意一点;
-            direction : ndarray(3,), 交线方向单位向量。
-        """
-        # 只保留前两块装甲板
-        if len(self.armor_plate) >= 2:
-            armors = self.armor_plate[:2]
-            self.armor_plate = armors
-
-        self.find_armor_normal_vector()
-        self.find_armor_center()
-        self.find_armor_normal_plane()
-
-        has_line, point_on_line, direction = self.intersect_two_planes(
-            self.normal_plane[0], self.normal_plane[1]
-        )
-        if not has_line or point_on_line is None or direction is None:
-            raise ValueError("两平面没有唯一交线，无法计算交线")
-
-        self.line_point = point_on_line
-        self.line_dir = direction
-        return self.line_point, self.line_dir
-
-    def get_center_from_normals(self):
-        """在 xz 平面中用两块装甲板法向量的投影求交点作为小车中心。"""
-        # 只保留前两块装甲板
-        if len(self.armor_plate) >= 2:
-            armors = self.armor_plate[:2]
-            self.armor_plate = armors
-        self.find_armor_normal_vector()
-        self.find_armor_center()
-
-        if len(self.armor_plate_center) < 2 or len(self.normal_vector) < 2:
-            raise ValueError("至少需要两块装甲板来计算中心")
-
-        C1 = np.asarray(self.armor_plate_center[0], dtype=float).reshape(3)
-        C2 = np.asarray(self.armor_plate_center[1], dtype=float).reshape(3)
-        n1 = np.asarray(self.normal_vector[0], dtype=float).reshape(3)
-        n2 = np.asarray(self.normal_vector[1], dtype=float).reshape(3)
-
-        # 投影到 xz 平面: 只保留 x,z 分量
-        p1 = C1[[0, 2]]  # (x1, z1)
-        p2 = C2[[0, 2]]  # (x2, z2)
-        v1 = n1[[0, 2]]  # (vx1, vz1)
-        v2 = n2[[0, 2]]  # (vx2, vz2)
-
-        # 避免方向退化
-        if np.linalg.norm(v1) < 1e-6 or np.linalg.norm(v2) < 1e-6:
-            raise ValueError("法向量在 xz 平面上的投影长度过小，无法定义二维直线")
-
-        # 二维中两条直线:
-        # L1: p1 + t1 * v1
-        # L2: p2 + t2 * v2
-        # 解 p1 + t1*v1 = p2 + t2*v2
-        A = np.array([[v1[0], -v2[0]],
-                      [v1[1], -v2[1]]], dtype=float)
-        b = (p2 - p1).astype(float)
-
-        det = np.linalg.det(A)
-        if abs(det) < 1e-8:
-            # 二维方向近似平行，退化为两中心点在 xz 平面投影的中点
-            inter_xz = 0.5 * (p1 + p2)
+        # 确保armor_plates是ArmorPlate对象列表
+        if armor_plates and hasattr(armor_plates[0], 'camera_pos'):
+            self.armor_plates_camera_positions = [armor_plate.camera_pos for armor_plate in armor_plates]
         else:
-            t1, t2 = np.linalg.solve(A, b)
-            inter_xz = p1 + t1 * v1
+            # 如果传入的是角点坐标数组，直接使用
+            self.armor_plates_camera_positions = armor_plates
 
-        center = np.array([inter_xz[0], inter_xz[1]], dtype=np.float32)
+        self.color = color
+        self.troop_type = troop_type
+        self.armor_length = None
+        self.armor_width = None
+        self.armor_height = None
+        self.test_robot_center = TestRobotCenter(self.armor_plates_camera_positions)
+        self.center = None
+        self.armor_center_point = []  # 格式：列表的列表 [[装甲板中心点1], [装甲板中心点2], ...]
 
-        self.center_point = center
-        return self.center_point
+    def cal_armor(self):
+        """计算装甲板尺寸，添加安全检查和正确的角点索引"""
+        if len(self.armor_plates_camera_positions) == 0:
+            # print("警告：没有装甲板数据")
+            return False
 
-    def predict_center_from_single_armor(self, visible_armor_index=0):
-        """
-        当只看到一块装甲板时，根据装甲板位置和记录的半径预测小车中心点
-        
-        参数:
-        visible_armor_index: 当前可见的装甲板索引，默认为0
-        
-        返回:
-        ndarray: 预测的小车中心点 [x, z]
-        """
-        # 检查是否已记录初始半径
-        if len(self.recorded_radii) < 2:
-            raise ValueError("尚未记录初始半径，请先调用record_initial_radii方法")
-            
-        # 确保有足够的装甲板信息
-        if len(self.armor_plate) < 1:
-            raise ValueError("至少需要一块装甲板来进行预测")
-            
-        # 直接计算装甲板中心点（而不是获取已有的中心点）
-        visible_armor = self.armor_plate[visible_armor_index]
-        pts = np.asarray(visible_armor.camera_pos, dtype=float).reshape(-1, 3)
-        if pts.shape[0] != 4:
-            raise ValueError("ArmorPlate.camera_pos 必须是4个3D角点")
-            
-        # 计算装甲板中心点
-        visible_center = np.mean(pts, axis=0)
-        
-        # 计算装甲板法向量（指向车外）
-        if len(self.normal_vector) <= visible_armor_index:
-            self.find_armor_normal_vector()
-            
-        normal = self.normal_vector[visible_armor_index]
-        
-        # 获取装甲板高度（直接从当前装甲板中心点获取高度）
-        armor_height = visible_center[1]
-        
-        # 根据装甲板高度选择匹配的半径（与记录的装甲板高度进行比较）
-        matched_radius = None
-        min_height_diff = float('inf')
-        for height, radius in self.height_to_radius.items():
-            height_diff = abs(height - armor_height)
-            if height_diff < min_height_diff:
-                min_height_diff = height_diff
-                matched_radius = radius
-                
-        # 如果没有找到匹配的高度，则使用第一个记录的半径
-        if matched_radius is None:
-            matched_radius = self.recorded_radii[0]
-            
-        # 计算小车中心点（装甲板中心沿着法向量反方向移动半径距离）
-        center_x = visible_center[0] + normal[0] * matched_radius
-        center_z = visible_center[2] + normal[2] * matched_radius
-        
-        # 更新中心点
-        self.center_point = np.array([center_x, center_z], dtype=np.float32)
-        
-        return self.center_point
+        # 检查第一个装甲板是否有足够的角点数据
+        if len(self.armor_plates_camera_positions[0]) < 4:
+            # print(f"警告：装甲板角点数据不足，需要4个角点，实际有{len(self.armor_plates_camera_positions[0])}个")
+            return False
 
-    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
-    # ISSUE: 中心点预测完全依赖于单一装甲板的信息和预估的半径
-    # POTENTIAL PROBLEMS:
-    # 1. 单一装甲板可能因为遮挡或识别错误导致预测偏差较大
-    # 2. 半径估算的误差会直接影响中心点位置的准确性
-    # SOLUTION SUGGESTIONS:
-    # 1. 引入多帧数据融合，增加预测的稳定性
-    # 2. 添加异常值检测机制，过滤明显错误的预测结果
-    # 3. 实现自适应半径校准机制，根据历史预测结果动态调整
+        try:
+            # 装甲板长度：左上角到右上角的距离
+            top_left = np.array(self.armor_plates_camera_positions[0][0], dtype=float)
+            top_right = np.array(self.armor_plates_camera_positions[0][2], dtype=float)
+            self.armor_length = np.linalg.norm(top_left - top_right)
 
-    def calculate_height_to_radius_mapping(self):
-        """
-        根据装甲板的高度计算旋转半径。
-        相邻装甲板的高度不同，对侧装甲板的高度相同。
-        生成一个键值对，键为装甲板的高度，值为对应方向的旋转半径。
-        """
-        self.height_to_radius.clear()
-        
-        if len(self.armor_plate_center) == 0:
-            self.find_armor_center()
-            
-        # 计算小车中心点
-        if self.center_point is None:
-            self.get_center_from_normals()
-            
-        center_x, center_z = self.center_point[0], self.center_point[1]
-        
-        # 为每块装甲板计算高度和对应的旋转半径
-        for i, armor in enumerate(self.armor_plate):
-            # 获取装甲板中心点
-            armor_center = self.armor_plate_center[i] if i < len(self.armor_plate_center) else None
-            if armor_center is None:
-                self.find_armor_center()
-                armor_center = self.armor_plate_center[i]
-                
-            # 装甲板高度（y坐标）
-            armor_height = armor_center[1]
-            
-            # 计算装甲板到中心点的距离（旋转半径）
-            dx = armor_center[0] - center_x
-            dz = armor_center[2] - center_z
-            radius = np.sqrt(dx*dx + dz*dz)
-            
-            # 将高度和半径添加到映射中
-            self.height_to_radius[armor_height] = radius
-            
-        return self.height_to_radius
+            # 装甲板宽度：右上角到右下角在x,z平面的投影距离
+            top_right_2d = np.array([self.armor_plates_camera_positions[0][2][0],
+                                     self.armor_plates_camera_positions[0][2][2]], dtype=float)
+            bottom_right_2d = np.array([self.armor_plates_camera_positions[0][3][0],
+                                        self.armor_plates_camera_positions[0][3][2]], dtype=float)
+            self.armor_width = np.linalg.norm(top_right_2d - bottom_right_2d)
 
-    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
-    # ISSUE: 当前高度匹配使用绝对差值比较，可能导致精度问题
-    # SOLUTION SUGGESTION: 
-    # 1. 添加可配置的高度容差阈值
-    # 2. 使用相对误差而非绝对误差进行匹配
-    # 3. 实现更复杂的匹配策略（如聚类算法）
+            # 装甲板高度：左上角到左下角y坐标的距离
+            self.armor_height = abs(self.armor_plates_camera_positions[0][0][1] -
+                                    self.armor_plates_camera_positions[0][1][1])
 
-    def record_initial_radii(self):
-        """
-        在第一次出现两块装甲板时记录它们的半径
-        """
-        # 确保至少有两块装甲板
-        if len(self.armor_plate) < 2:
-            raise ValueError("至少需要两块装甲板来记录初始半径")
-            
-        # 计算装甲板中心
-        if len(self.armor_plate_center) == 0:
-            self.find_armor_center()
-            
-        # 计算小车中心点
-        if self.center_point is None:
-            self.get_center_from_normals()
-            
-        center_x, center_z = self.center_point[0], self.center_point[1]
-        
-        # 记录前两块装甲板的半径
-        self.recorded_radii.clear()
-        self.armor_dimensions.clear()
-        for i in range(min(2, len(self.armor_plate))):
-            armor = self.armor_plate[i]
-            armor_center = self.armor_plate_center[i]
-            dx = armor_center[0] - center_x
-            dz = armor_center[2] - center_z
-            radius = np.sqrt(dx*dx + dz*dz)
-            print("Recorded radius:", radius)
-            self.recorded_radii.append(radius)
-            
-            # 记录装甲板尺寸信息
-            armor_height = armor_center[1]
-            armor_type = armor.armor_type
-            
-            # 计算装甲板的长度、宽度和z方向的差异
-            pts = np.asarray(armor.camera_pos, dtype=float).reshape(-1, 3)
-            top_points = pts[[0, 2]]  # top_left, top_right
-            bottom_points = pts[[1, 3]]  # bottom_left, bottom_right
-            
-            # 计算装甲板在z方向上的差异
-            top_z_avg = np.mean(top_points[:, 2])
-            bottom_z_avg = np.mean(bottom_points[:, 2])
-            z_diff = abs(top_z_avg - bottom_z_avg)
-            
-            # 计算装甲板的长度和宽度
-            length = np.linalg.norm(pts[2] - pts[0])  # top_right to top_left
-            width = np.linalg.norm(pts[1] - pts[0])   # bottom_left to top_left
-            
-            # 存储装甲板尺寸信息
-            self.armor_dimensions[armor_height] = (armor_type, length, width, z_diff)
-            
-        # 同时计算高度到半径的映射
-        self.calculate_height_to_radius_mapping()
-            
-        return self.recorded_radii
+            return True
+        except (IndexError, ValueError) as e:
+            # print(f"计算装甲板尺寸时出错: {e}")
+            return False
 
-    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
-    # ISSUE: 当前代码中装甲板高度匹配使用简单的最近邻匹配
-    # SOLUTION SUGGESTION:
-    # 1. 引入高度容差阈值，避免因微小测量误差导致错误匹配
-    # 2. 添加更稳健的统计方法（如滑动窗口平均）来提高稳定性
-    # 3. 实现缓存机制以减少重复计算
+    def find_robot_center(self):
+        """查找机器人中心点"""
+        # 清空装甲板中心点列表
+        self.armor_center_point.clear()
 
-    def predict_other_armors(self, visible_armor_index=0):
-        """
-        当只看到一块装甲板时，根据之前记录的两个半径预测其他装甲板的位置
-        
-        参数:
-        visible_armor_index: 当前可见的装甲板索引，默认为0
-        
-        返回:
-        list: 预测的装甲板列表（不包括当前可见装甲板）
-        """
-        # 检查是否已记录初始半径
-        if len(self.recorded_radii) < 2:
-            raise ValueError("尚未记录初始半径，请先调用record_initial_radii方法")
-            
-        # 确保有足够的装甲板信息
-        if len(self.armor_plate) < 1:
-            raise ValueError("至少需要一块装甲板来进行预测")
-            
-        # 计算装甲板中心
-        if len(self.armor_plate_center) == 0:
-            self.find_armor_center()
-            
-        # 当只有一块装甲板时，根据装甲板位置和记录的半径推算小车中心点
-        visible_armor = self.armor_plate[visible_armor_index]
-        # 直接计算装甲板中心点（而不是获取已有的中心点）
-        pts = np.asarray(visible_armor.camera_pos, dtype=float).reshape(-1, 3)
-        if pts.shape[0] != 4:
-            raise ValueError("ArmorPlate.camera_pos 必须是4个3D角点")
-            
-        # 计算装甲板中心点
-        visible_center = np.mean(pts, axis=0)
-        
-        # 计算装甲板法向量（指向车外）
-        if len(self.normal_vector) <= visible_armor_index:
-            self.find_armor_normal_vector()
-            
-        normal = self.normal_vector[visible_armor_index]
-        
-        # 获取装甲板高度（直接从当前装甲板中心点获取高度）
-        armor_height = visible_center[1]
-        
-        # 根据装甲板高度选择匹配的半径（与记录的装甲板高度进行比较）
-        matched_radius = None
-        min_height_diff = float('inf')
-        for height, radius in self.height_to_radius.items():
-            height_diff = abs(height - armor_height)
-            if height_diff < min_height_diff:
-                min_height_diff = height_diff
-                matched_radius = radius
-                
-        # 如果没有找到匹配的高度，则使用第一个记录的半径
-        if matched_radius is None:
-            matched_radius = self.recorded_radii[0]
-            
-        # 计算小车中心点（装甲板中心沿着法向量反方向移动半径距离）
-        center_x = visible_center[0] + normal[0] * matched_radius
-        center_z = visible_center[2] + normal[2] * matched_radius
-        
-        # 更新中心点
-        self.center_point = np.array([center_x, center_z], dtype=np.float32)
-        
-        # 计算可见装甲板的角度（相对于推算出的中心点）
-        dx_visible = visible_center[0] - center_x
-        dz_visible = visible_center[2] - center_z
-        angle_visible = np.arctan2(dz_visible, dx_visible)
-        
-        # 预测其他装甲板的位置
-        predicted_armors = []
-        
-        # 对于RM机器人，通常有4个装甲板，所以我们预测3个其他装甲板
-        # 使用记录的两个半径进行预测
-        for i in range(3):  # 预测3个装甲板
-            # 计算预测角度（假设装甲板按标准布局分布）
-            # RM机器人装甲板分布: 前(0°), 左(90°), 后(180°), 右(270°)
-            angle_offset = np.pi / 2 * (i + 1)  # 90度间隔
-            pred_angle = angle_visible + angle_offset
-            
-            # 根据装甲板布局规律选择正确的半径
-            # 相邻装甲板(90度和270度方向)使用另一个半径（高度不同）
-            # 对面装甲板(180度方向)使用相同的半径（高度相同）
-            # 使用在计算中心点时记录的高度-半径映射关系
-            current_height = visible_center[1]
-            
-            # 根据预测装甲板的位置选择合适的半径和高度
-            if i == 0 or i == 2:  # 90度和270度方向（相邻装甲板，高度不同）
-                # 查找与当前装甲板高度不同的半径和高度
-                best_radius = self.recorded_radii[0]
-                best_height = current_height  # 默认使用当前高度
-                height_diff_max = 0
-                
-                for height, radius in self.height_to_radius.items():
-                    height_diff = abs(height - current_height)
-                    if height_diff > height_diff_max and height_diff > 1e-6:  # 确保不是同一个高度
-                        height_diff_max = height_diff
-                        best_radius = radius
-                        best_height = height  # 使用匹配到的不同高度
-                        
-                radius = best_radius
-                pred_y = best_height  # 使用不同高度
-            else:  # 180度方向（对面装甲板，高度相同）
-                # 查找与当前装甲板高度相同的半径
-                best_radius = self.recorded_radii[0]
-                best_height = current_height  # 默认使用当前高度
-                min_height_diff = float('inf')
-                
-                for height, radius in self.height_to_radius.items():
-                    height_diff = abs(height - current_height)
-                    if height_diff < min_height_diff:
-                        min_height_diff = height_diff
-                        best_radius = radius
-                        best_height = height  # 确认使用相同高度
-                        
-                radius = best_radius
-                pred_y = best_height  # 使用相同高度
-            
-            # 计算预测位置
-            pred_x = center_x + radius * np.cos(pred_angle)
-            pred_z = center_z + radius * np.sin(pred_angle)
-            
-            # 根据装甲板类型重构装甲板角点
-            pred_center_3d = np.array([pred_x, pred_y, pred_z])
-            
-            # 对于相邻装甲板（i == 0 or i == 2），使用新的重构函数
-            # 对于对面装甲板（i == 1），可以使用原来的镜像方法
-            if i == 0 or i == 2:  # 相邻装甲板
-                # 使用新的函数根据中心点和装甲板尺寸重构角点
-                predicted_pts = self._reconstruct_armor_from_center_and_dimensions(pred_center_3d, pred_y)
-            else:  # 对面装甲板
-                # 对面装甲板可以使用原来的镜像方法
-                pred_center_2d = np.array([pred_x, pred_z])
-                predicted_pts = self._reconstruct_corners_from_center(visible_armor, pred_center_2d)
-            
-            # 创建新的装甲板对象
-            new_armor = ArmorPlate(
-                points=predicted_pts,
-                color=visible_armor.color,
-                troop_type=visible_armor.troop_type,
-                area=visible_armor.area,
-                confident=visible_armor.confident * 0.7,  # 预测的装甲板置信度略低
-            )
-            predicted_armors.append(new_armor)
-            
-        return predicted_armors
+        if len(self.armor_plates_camera_positions) > 1:
+            TestRobotCenter.predict_r_h.clear()
+            robot_center_3d = self.test_robot_center.get_robot_center_by_two_armor()
+            # print(f"使用两块装甲板计算中心点: {robot_center_3d}")
+        elif len(self.armor_plates_camera_positions) == 1 and len(self.test_robot_center.predict_r_h) >= 2:
+            robot_center_3d = self.test_robot_center.get_robot_center_by_one_armor()
+            # print(f"使用一块装甲板计算中心点: {robot_center_3d}")
+        else:
+            robot_center_3d = None
+            # print("无法计算中心点")
 
-    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
-    # ISSUE: 半径选择算法过于简化，仅基于高度差进行匹配
-    # POTENTIAL PROBLEMS:
-    # 1. 当两个装甲板高度相近时，容易产生误判
-    # 2. 缺乏对噪声和异常值的鲁棒性
-    # 3. 没有考虑装甲板之间的几何约束关系
-    # SOLUTION SUGGESTIONS:
-    # 1. 增加高度容差检查，避免过度敏感
-    # 2. 实现基于几何模型的验证机制
-    # 3. 添加历史数据平滑处理，提高稳定性
+        self.center = robot_center_3d
 
-    def _reconstruct_armor_from_center_and_dimensions(self, center_3d: np.ndarray, armor_height: float) -> np.ndarray:
-        """
-        根据装甲板中心点坐标和装甲板尺寸信息重构装甲板四个角点坐标
-        
-        参数:
-        center_3d: 装甲板中心点的3D坐标 [x, y, z]
-        armor_height: 装甲板的高度，用于查找匹配的装甲板尺寸
-        
-        返回:
-        np.ndarray: 装甲板四个角点的3D坐标 [[top_left, bottom_left, top_right, bottom_right]]
-        """
-        # 查找与给定高度最匹配的装甲板尺寸
-        matched_height = None
-        min_height_diff = float('inf')
-        matched_dimensions = None
-        
-        for height, dimensions in self.armor_dimensions.items():
-            height_diff = abs(height - armor_height)
-            if height_diff < min_height_diff:
-                min_height_diff = height_diff
-                matched_height = height
-                matched_dimensions = dimensions
-                
-        # 如果没有找到匹配的高度，抛出异常或使用默认处理
-        if matched_height is None or matched_dimensions is None:
-            # 如果没有记录的尺寸信息，我们无法准确重构装甲板
-            raise ValueError(f"No recorded armor dimensions for height {armor_height}. "
-                             f"Available heights: {list(self.armor_dimensions.keys())}")
-            
-        # 使用实际测量的装甲板尺寸
-        armor_type, length, width, z_diff = matched_dimensions
-            
-        # 根据装甲板尺寸和中心点计算四个角点
-        center_x, center_y, center_z = center_3d
-        
-        # 假设装甲板正面朝向z轴正方向，x轴方向为长度，y轴方向为宽度
-        half_length = length / 2
-        half_width = width / 2
-        half_z_diff = z_diff / 2
-        # 计算四个角点坐标
-        # 注意：这里的坐标系是相机坐标系：x向右，y向下，z向前
-        top_left = [center_x + half_z_diff, center_y + half_width, center_z+half_length]
-        bottom_left = [center_x - half_z_diff, center_y - half_width, center_z+half_length]
-        top_right = [center_x + half_z_diff, center_y + half_width, center_z-half_length]
-        bottom_right = [center_x - half_z_diff, center_y - half_width, center_z-half_length]
-        
-        return np.array([top_left, bottom_left, top_right, bottom_right], dtype=np.float32)
+        # 从TestRobotCenter获取装甲板中心点
+        self.armor_center_point = self.test_robot_center.armor_center_point
+        # print(f"GuardRobot.armor_center_point: {self.armor_center_point}")
+        return self.center
 
-    # === SENSITIVITY IMPROVEMENT SUGGESTION ===
-    # ISSUE: 角点重构依赖于预记录的尺寸信息，如果初始测量不准确会影响后续预测
-    # SOLUTION SUGGESTION:
-    # 1. 实现尺寸信息的动态更新机制
-    # 2. 添加尺寸测量的置信度评估
-    # 3. 使用多个样本的统计平均值而非单一测量值
+    def get_another_armor_plate_center_by_center(self):
+        """根据机器人中心计算其他装甲板中心点"""
+        if self.center is None:
+            # print("警告：没有中心点数据")
+            return
 
-    def _reconstruct_corners_from_center(self, armor: ArmorPlate, car_center_2d: np.ndarray) -> np.ndarray:
-        """根据小车二维中心 (x,z) 对原装甲板四角点在 x/z 平面做关于车心的对称映射，y 不变。"""
-        pts = np.asarray(armor.camera_pos, dtype=float).reshape(-1, 3)
-        if pts.shape[0] != 4:
-            raise ValueError("ArmorPlate.camera_pos 必须是4个3D角点")
+        # print(f"机器人中心: {self.center}")
+        # print(f"当前装甲板数量: {len(self.armor_plates_camera_positions)}")
+        # print(f"预测半径字典: {self.predict_r_h}")
 
-        car_center_2d = np.asarray(car_center_2d, dtype=float).reshape(2)
-        car_x, car_z = car_center_2d[0], car_center_2d[1]
+        if len(self.armor_plates_camera_positions) == 2:
+            # print("有两块装甲板数据")
 
-        new_pts = np.empty_like(pts)
-        for i in range(len(pts)):
-            new_x = 2.0 * car_x - pts[i][0]
-            new_z = 2.0 * car_z - pts[i][2]
-            new_y = pts[i][1]  # 保持原 y
-            new_pts[i] = np.array([new_x, new_y, new_z], dtype=float)
+            # 确保armor_center_point有足够的装甲板中心点
+            if len(self.armor_center_point) < 2:
+                # print("警告：装甲板中心点数据不足")
+                return
 
-        # 返回顺序仍为 [top_left, bottom_left, top_right, bottom_right]
-        return new_pts
+            # 获取已知的两个装甲板中心点
+            armor_centers = self.armor_center_point[:2]
 
-    def calculate_another_armor_by_center(self):
-        """根据当前观测装甲板和小车二维中心, 构造对面装甲板并追加到 self.armor_plate。"""
-        # 1. 计算车中心与每块装甲板中心
-        center_cam = self.get_center_from_normals()  # center_cam: [x, z]
-        self.find_armor_center()  # 更新 self.armor_plate_center
+            # 计算另外两个装甲板中心点（关于中心对称）
+            new_centers = []
 
-        new_armors = []
-
-        for armor in self.armor_plate:
-            # 直接用车的二维中心对原装甲板四角点做对称映射
-            opposite_pts = self._reconstruct_corners_from_center(
-                armor=armor,
-                car_center_2d=center_cam,
-            )
-
-            new_armor = ArmorPlate(
-                points=opposite_pts,
-                color=armor.color,
-                troop_type=armor.troop_type,
-                area=armor.area,
-                confident=armor.confident,
-            )
-            new_armors.append(new_armor)
-
-        self.armor_plate.extend(new_armors)
-
-    def get_center_x(self, armor: ArmorPlate) -> float:
-        """计算装甲板中心的x坐标，用于匹配追踪器"""
-        pts = np.array(armor.camera_pos).reshape(-1, 3)
-        return float(np.mean(pts[:, 0]))
-
-    def update_armor_trackers(self, dt: float, h: int, w: int, camera2xy_func=None, angular_velocity_info=None):
-        """
-        更新装甲板追踪器
-        
-        参数:
-        dt: 时间间隔
-        h: 图像高度
-        w: 图像宽度
-        camera2xy_func: 相机坐标到像素坐标的转换函数
-        angular_velocity_info: 角速度信息 (angular_velocity, rotation_axis)
-        """
-        # 如果还没有创建追踪器，则初始化4个追踪器
-        if not self.armor_trackers:
-            for i in range(4):  # 初始化4个追踪器
-                self.armor_trackers[i] = {
-                    "kfs": [None] * 4,
-                    "inited": [False] * 4,
-                    "miss_cnt": 0,
-                    "center_x": 0.0,
-                    "color": Color.RED,  # 默认颜色
-                    "troop_type": TroopType.INFANTRY,  # 默认兵种
-                    "smooth_pixels": None
-                }
-        
-        # 增加所有追踪器的丢失计数
-        for armor_id in self.armor_trackers:
-            self.armor_trackers[armor_id]["miss_cnt"] = self.armor_trackers[armor_id].get("miss_cnt", 0) + 1
-            
-        # 为每个装甲板创建或更新追踪器
-        for armor_idx, armor in enumerate(self.armor_plate):
-            armor_center_x = self.get_center_x(armor)
-            
-            # 简单的装甲板匹配逻辑（基于中心x坐标）
-            matched_armor_id = None
-            for armor_id, state in self.armor_trackers.items():
-                if abs(state["center_x"] - armor_center_x) < 50:  # 阈值可根据需要调整
-                    matched_armor_id = armor_id
-                    # 更新装甲板属性
-                    state["center_x"] = armor_center_x
-                    state["color"] = armor.color
-                    state["troop_type"] = armor.troop_type
-                    # 重置丢失计数
-                    state["miss_cnt"] = 0
-                    break
-            
-            # 如果没有匹配的装甲板，则使用第一个可用的追踪器
-            if matched_armor_id is None:
-                for armor_id, state in self.armor_trackers.items():
-                    if state["miss_cnt"] > 0:  # 使用丢失的追踪器
-                        matched_armor_id = armor_id
-                        state["center_x"] = armor_center_x
-                        state["color"] = armor.color
-                        state["troop_type"] = armor.troop_type
-                        state["miss_cnt"] = 0
-                        break
-            
-            # 如果还是没有匹配到，则使用第一个追踪器
-            if matched_armor_id is None:
-                matched_armor_id = 0
-                self.armor_trackers[matched_armor_id]["center_x"] = armor_center_x
-                self.armor_trackers[matched_armor_id]["color"] = armor.color
-                self.armor_trackers[matched_armor_id]["troop_type"] = armor.troop_type
-                self.armor_trackers[matched_armor_id]["miss_cnt"] = 0
-            
-            # 为4个角点应用卡尔曼滤波
-            kfs = self.armor_trackers[matched_armor_id]["kfs"]
-            inited = self.armor_trackers[matched_armor_id]["inited"]
-            
-            filtered_pixels = []
-            for idx, p in enumerate(armor.camera_pos):
-                px, py, pz = map(float, p)
-                
-                # 计算点的半径和角度（相对于机器人中心点）
-                r = 0.0
-                theta = 0.0
-                omega = 0.0
-                
-                # 如果有中心点信息，计算相对半径和角度
-                if self.center_point is not None:
-                    center_x, center_z = self.center_point[0], self.center_point[1]
-                    # 在xz平面上计算相对位置
-                    dx = px - center_x
-                    dz = pz - center_z
-                    r = np.sqrt(dx*dx + dz*dz)
-                    theta = np.arctan2(dz, dx)
-                
-                # 如果有角速度信息，使用它
-                if angular_velocity_info is not None:
-                    omega, _ = angular_velocity_info
-                
-                if not inited[idx]:
-                    kf_point = KF(
-                        state_dim=9,  # 位置(3) + 半径(1) + 角度(1) + 角速度(1) + 速度(3) = 9维
-                        init_cov=self.corner_kf_init_cov,
-                        measure_noise=self.corner_kf_measure_noise,
-                        process_noise=self.corner_kf_process_noise,
-                        x=px, y=py, z=pz,
-                        r=r, theta=theta, omega=omega,
-                        vx=0.0, vy=0.0, vz=0.0,
-                    )
-                    kf_point.init_kf(dt=dt)
-                    kfs[idx] = kf_point
-                    inited[idx] = True
-                
-                kf_point = kfs[idx]
-                kf_point.predict_next(dt)
-                kf_point.correct_by_sensor([px, py, pz])
-                
-                state_post, _P = kf_point.get_state()
-                pos_post = state_post[:3].reshape(-1)
-                
-                # 使用传入的转换函数或默认函数
-                if camera2xy_func:
-                    u_f, v_f = camera2xy_func(pos_post)
+            for i in range(2):
+                # 确保装甲板中心点是列表或数组
+                if isinstance(armor_centers[i], (list, np.ndarray)):
+                    center_point = np.array(armor_centers[i], dtype=float)
                 else:
-                    u_f, v_f = self._camera2xy(pos_post, h, w)
-                    
-                u_f = int(max(0, min(w - 1, u_f)))
-                v_f = int(max(0, min(h - 1, v_f)))
-                filtered_pixels.append((u_f, v_f))
-            
-            # 保存滤波后的像素坐标
-            self.armor_trackers[matched_armor_id]["smooth_pixels"] = filtered_pixels
+                    # print(f"警告：装甲板中心点{i}不是列表或数组: {armor_centers[i]}")
+                    continue
 
-    def predict_armor_positions(self, dt: float, angular_velocity_info=None):
-        """
-        使用卡尔曼滤波器预测装甲板位置
-        
-        参数:
-        dt: 时间间隔
-        angular_velocity_info: 角速度信息 (angular_velocity, rotation_axis)
-        
-        返回:
-        predicted_armors: 预测的装甲板列表
-        """
-        predicted_armors = []
-        
-        # 确保有4个追踪器
-        while len(self.armor_trackers) < 4:
-            armor_id = len(self.armor_trackers)
-            self.armor_trackers[armor_id] = {
-                "kfs": [None] * 4,
-                "inited": [False] * 4,
-                "miss_cnt": 0,
-                "center_x": 0.0,
-                "color": Color.RED,  # 默认颜色
-                "troop_type": TroopType.INFANTRY,  # 默认兵种
-                "smooth_pixels": None
-            }
-        
-        # 遍历所有4个追踪器
-        for armor_id in range(4):
-            state = self.armor_trackers[armor_id]
-            kfs = state["kfs"]
-            predicted_points = []
-            
-            # 对每个角点进行预测
-            for idx, kf in enumerate(kfs):
-                if kf is not None:
-                    # 预测下一个状态
-                    pred = kf.predict_next(dt)
-                    # 获取预测的位置
-                    pred_pos = pred[:3].reshape(-1)
-                    predicted_points.append(pred_pos)
-            
-            # 创建预测的装甲板对象
-            if len(predicted_points) == 4:
-                predicted_armor = ArmorPlate(
-                    points=np.array(predicted_points),
-                    color=state["color"],
-                    troop_type=state["troop_type"],
-                    area=0,  # 面积暂时设为0
-                    confident=0.5  # 置信度设为中等
-                )
-                predicted_armors.append(predicted_armor)
-                
-        return predicted_armors
+                # 计算关于中心的对称点
+                symmetric_center = np.array([
+                    2 * self.center[0] - center_point[0],
+                    center_point[1],  # 保持相同高度
+                    2 * self.center[2] - center_point[2]
+                ], dtype=float)
+                new_centers.append(symmetric_center.tolist())
 
-    def _camera2xy(self, pos, h, w):
+            # 将所有中心点保存到列表中
+            self.armor_center_point.extend(new_centers)
+            # print(f"计算得到4个装甲板中心点: {self.armor_center_point}")
+
+        elif len(self.armor_plates_camera_positions) == 1:
+            # print("有一块装甲板数据")
+
+            # 确保有足够的装甲板中心点
+            if len(self.armor_center_point) < 1:
+                # print("警告：装甲板中心点数据不足")
+                return
+
+            if len(self.predict_r_h) < 2:
+                # print(f"警告：预测半径数据不足，当前有{len(self.predict_r_h)}个半径")
+                return
+
+            # 获取已知装甲板中心点
+            if isinstance(self.armor_center_point[0], (list, np.ndarray)):
+                known_center = np.array(self.armor_center_point[0], dtype=float)
+            else:
+                # print(f"警告：装甲板中心点0不是列表或数组: {self.armor_center_point[0]}")
+                return
+
+            # 1. 计算对面装甲板中心点（关于中心对称）
+            opposite_center = np.array([
+                2 * self.center[0] - known_center[0],
+                known_center[1],  # 相同高度
+                2 * self.center[2] - known_center[2]
+            ])
+
+            # 保存到armor_center_point中
+            self.armor_center_point.append(opposite_center.tolist())
+
+            # 2. 获取半径数据
+            # 找到与已知装甲板高度最接近的半径键
+            known_height = known_center[1]
+            radius_face_camera = get_key_by_closest_value(self.predict_r_h, known_height)
+
+            # 找到另一个半径键
+            radius_not_face_camera = None
+            for key in self.predict_r_h.keys():
+                # 将key转换为float进行比较
+                try:
+                    key_float = float(key)
+                    known_height_float = float(known_height)
+                    if abs(key_float - known_height_float) > 0.01:  # 允许微小误差
+                        radius_not_face_camera = key
+                        break
+                except (ValueError, TypeError):
+                    continue
+
+            if radius_not_face_camera is None:
+                # print("警告：无法找到非面向相机的半径键")
+                return
+
+            # print(f"查找到的面向相机半径键: {radius_face_camera}")
+            # print(f"查找到的非面向相机半径键: {radius_not_face_camera}")
+
+            # 3. 计算相邻两个装甲板中心点
+            # 获取机器人中心到已知装甲板中心的向量
+            vec_to_known = known_center - self.center
+            vec_to_known_2d = np.array([vec_to_known[0], vec_to_known[2]])
+
+            # 旋转90度得到相邻装甲板的方向
+            vec_adjacent_2d = np.array([-vec_to_known_2d[1], vec_to_known_2d[0]])
+            vec_adjacent_2d = vec_adjacent_2d / np.linalg.norm(vec_adjacent_2d)
+
+            # 使用非面向相机的半径
+            other_radius = self.predict_r_h[radius_not_face_camera]
+            other_height = float(radius_not_face_camera)
+
+            # 计算两个相邻装甲板中心点
+            adjacent_center1_2d = np.array([self.center[0], self.center[2]]) + vec_adjacent_2d * other_radius
+            adjacent_center2_2d = np.array([self.center[0], self.center[2]]) - vec_adjacent_2d * other_radius
+
+            # 构建三维点并保存
+            adjacent_center1 = [adjacent_center1_2d[0], other_height, adjacent_center1_2d[1]]
+            adjacent_center2 = [adjacent_center2_2d[0], other_height, adjacent_center2_2d[1]]
+
+            self.armor_center_point.append(adjacent_center1)
+            self.armor_center_point.append(adjacent_center2)
+
+            # print(f"成功添加3个装甲板中心点，当前armor_centers长度: {len(self.armor_center_point)}")
+
+    def get_armor_by_armor_center(self):
+        """根据装甲板中心点生成装甲板角点"""
+        # print(f"armor_center_point长度: {len(self.armor_center_point)}")
+        # print(f"armor_plates_camera_positions长度: {len(self.armor_plates_camera_positions)}")
+
+        if len(self.armor_center_point) < 4:
+            # print("警告：装甲板中心点不足4个")
+            return
+
+        if len(self.armor_plates_camera_positions) == 2:
+            # 使用中心对称方法生成另外两个装甲板
+            for i in range(2):
+                armor_plate = [
+                    find_center_symmetric_point_with_2d_center(
+                        (self.center[0], self.center[2]),
+                        self.armor_plates_camera_positions[i][0]
+                    ),
+                    find_center_symmetric_point_with_2d_center(
+                        (self.center[0], self.center[2]),
+                        self.armor_plates_camera_positions[i][1]
+                    ),
+                    find_center_symmetric_point_with_2d_center(
+                        (self.center[0], self.center[2]),
+                        self.armor_plates_camera_positions[i][2]
+                    ),
+                    find_center_symmetric_point_with_2d_center(
+                        (self.center[0], self.center[2]),
+                        self.armor_plates_camera_positions[i][3]
+                    )
+                ]
+                self.armor_plates_camera_positions.append(armor_plate)
+
+        elif len(self.armor_plates_camera_positions) == 1:
+            # 确保有4个装甲板中心点
+            if len(self.armor_center_point) < 4:
+                # print("警告：需要4个装甲板中心点")
+                return
+
+            # 使用装甲板中心点和尺寸生成装甲板角点
+            # 中心点1：已知的装甲板中心点（索引0）
+            # 中心点2：对面装甲板中心点（索引1）
+            # 中心点3：相邻装甲板中心点1（索引2）
+            # 中心点4：相邻装甲板中心点2（索引3）
+
+            # 生成对面装甲板（索引1）
+            if isinstance(self.armor_center_point[1], (list, np.ndarray)):
+                center_point_1 = np.array(self.armor_center_point[1], dtype=float)
+                armor_plate_1 = [
+                    [center_point_1[0] - self.armor_width / 2,
+                     center_point_1[1] + self.armor_height / 2,
+                     center_point_1[2] - self.armor_length / 2],
+                    [center_point_1[0] - self.armor_width / 2,
+                     center_point_1[1] - self.armor_height / 2,
+                     center_point_1[2] - self.armor_length / 2],
+                    [center_point_1[0] + self.armor_width / 2,
+                     center_point_1[1] + self.armor_height / 2,
+                     center_point_1[2] + self.armor_length / 2],
+                    [center_point_1[0] + self.armor_width / 2,
+                     center_point_1[1] - self.armor_height / 2,
+                     center_point_1[2] + self.armor_length / 2]
+                ]
+                self.armor_plates_camera_positions.append(armor_plate_1)
+            else:
+                # print(f"警告：装甲板中心点1不是列表: {self.armor_center_point[1]}")
+                return
+
+            # 生成相邻装甲板1（索引2）
+            if isinstance(self.armor_center_point[2], (list, np.ndarray)):
+                center_point_2 = np.array(self.armor_center_point[2], dtype=float)
+                armor_plate_2 = [
+                    [center_point_2[0] - self.armor_length / 2,
+                     center_point_2[1] + self.armor_height / 2,
+                     center_point_2[2] - self.armor_width / 2],
+                    [center_point_2[0] - self.armor_length / 2,
+                     center_point_2[1] - self.armor_height / 2,
+                     center_point_2[2] - self.armor_width / 2],
+                    [center_point_2[0] + self.armor_length / 2,
+                     center_point_2[1] + self.armor_height / 2,
+                     center_point_2[2] + self.armor_width / 2],
+                    [center_point_2[0] + self.armor_length / 2,
+                     center_point_2[1] - self.armor_height / 2,
+                     center_point_2[2] + self.armor_width / 2]
+                ]
+                self.armor_plates_camera_positions.append(armor_plate_2)
+            else:
+                # print(f"警告：装甲板中心点2不是列表: {self.armor_center_point[2]}")
+                return
+
+            # 生成相邻装甲板2（索引3）
+            if isinstance(self.armor_center_point[3], (list, np.ndarray)):
+                center_point_3 = np.array(self.armor_center_point[3], dtype=float)
+                armor_plate_3 = [
+                    [center_point_3[0] - self.armor_width / 2,
+                     center_point_3[1] + self.armor_height / 2,
+                     center_point_3[2] - self.armor_length / 2],
+                    [center_point_3[0] - self.armor_width / 2,
+                     center_point_3[1] - self.armor_height / 2,
+                     center_point_3[2] - self.armor_length / 2],
+                    [center_point_3[0] + self.armor_width / 2,
+                     center_point_3[1] + self.armor_height / 2,
+                     center_point_3[2] + self.armor_length / 2],
+                    [center_point_3[0] + self.armor_width / 2,
+                     center_point_3[1] - self.armor_height / 2,
+                     center_point_3[2] + self.armor_length / 2]
+                ]
+                self.armor_plates_camera_positions.append(armor_plate_3)
+            # else:
+                # print(f"警告：装甲板中心点3不是列表: {self.armor_center_point[3]}")
+
+    # 其他方法保持不变...
+    def use_robot_prediction(self):
+        """执行机器人预测流程"""
+        # print("=== 开始机器人预测流程 ===")
+
+        if not self.cal_armor():
+            # print("装甲板计算失败，提前返回")
+            return
+
+        self.find_robot_center()
+        print(f"机器人中心点: {self.center}")
+
+        self.get_another_armor_plate_center_by_center()
+        # print(f"计算后armor_center_point: {self.armor_center_point}")
+
+        self.get_armor_by_armor_center()
+        # print("机器人预测流程完成")
+
+    def get_line_info_and_normal_vector(self, point1, point2):
         """
-        简化的相机坐标到像素坐标的转换函数
-        注意：这是一个简化的实现，实际应用中应该使用更精确的相机参数
+        给定两个二维点（x,z坐标），求出直线信息和这条直线对应的法向量
         """
-        x, y, z = pos
-        # 简单的透视投影，假设焦距为w/2，主点在图像中心
-        if z != 0:
-            u = (x / z) * (w / 2) + (w / 2)
-            v = (y / z) * (w / 2) + (h / 2)
+        # 保持原有代码不变
+        p1 = np.array(point1, dtype=float)
+        p2 = np.array(point2, dtype=float)
+
+        if p1.shape != (2,) or p2.shape != (2,):
+            raise ValueError("输入点必须是二维坐标 [x, z]")
+
+        direction_vector = p2 - p1
+        line_length = np.linalg.norm(direction_vector)
+
+        if line_length > 0:
+            direction_unit = direction_vector / line_length
         else:
-            u, v = 0, 0
-        return u, v
+            direction_unit = np.zeros(2)
 
-    def cleanup_trackers(self):
-        """清理长时间未匹配的追踪器"""
-        for armor_id, state in list(self.armor_trackers.items()):
-            # 增加丢失计数
-            state["miss_cnt"] = state.get("miss_cnt", 0) + 1
-            
-            # 如果超过最大丢失帧数，则删除追踪器
-            if state["miss_cnt"] > self.max_miss_frames:
-                del self.armor_trackers[armor_id]
+        midpoint = (p1 + p2) / 2
+        line_equation = lambda t: p1 + t * direction_unit
 
-    def get_tracked_armors(self) -> List[Dict[str, Any]]:
+        normal_vectors = []
+        if line_length > 0:
+            normal_vector = np.array([-direction_unit[1], direction_unit[0]], dtype=float)
+            normal_vector = normal_vector / np.linalg.norm(normal_vector)
+            normal_vectors.append(normal_vector)
+
+        line_info = {
+            'direction_vector': direction_unit,
+            'line_equation': line_equation,
+            'line_length': line_length,
+            'midpoint': midpoint,
+            'point1': p1,
+            'point2': p2
+        }
+
+        return line_info, normal_vectors
+
+    def find_point_by_vector_and_length(self, start_point, direction_vector, length, normalize_vector=True):
         """
-        获取所有正在追踪的装甲板信息
-        
-        返回:
-        List[Dict]: 包含所有追踪器信息的列表
+        根据一个二维点、一个二维向量和一个长度值，找到具体的坐标点
         """
-        return list(self.armor_trackers.values())
+        # 保持原有代码不变
+        start = np.array(start_point, dtype=float)
+        direction = np.array(direction_vector, dtype=float)
+
+        if start.shape != (2,):
+            raise ValueError("起始点必须是二维坐标 [x, z]")
+        if direction.shape != (2,):
+            raise ValueError("方向向量必须是二维向量 [dx, dz]")
+
+        vector_norm = np.linalg.norm(direction)
+        if vector_norm == 0:
+            raise ValueError("方向向量不能为零向量")
+
+        if normalize_vector:
+            direction_unit = direction / vector_norm
+        else:
+            direction_unit = direction
+
+        target_point = start + length * direction_unit
+
+        return target_point

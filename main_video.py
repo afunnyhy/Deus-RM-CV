@@ -257,6 +257,7 @@ def run(video_path):
             detected_armor.camera_pos = np.asarray(obj_pts_cam, dtype=np.float32)
             armor_area = getattr(detected_armor_box, "area", 0.0)
             guardrobot_candidates.append((detected_armor, armor_area))
+            print(detected_armor.camera_pos)
 
         # =============== 多目标数据关联：为每块观测匹配最近的轨迹 ===============
         # 先默认所有轨迹 miss_cnt+1
@@ -636,4 +637,4 @@ def run(video_path):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    run(r"test_data/0323blue2.mp4")
+    run(r"test_data/0323blue1.mp4")
