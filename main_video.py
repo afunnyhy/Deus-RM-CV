@@ -172,53 +172,66 @@ def run(video_path):
     traj_width, traj_height = 800, 800
     traj_video_writer = cv2.VideoWriter(traj_output_file, fourcc, fps, (traj_width, traj_height))
     traj_img = np.zeros((traj_height, traj_width, 3), dtype=np.uint8) + 255  # 白底
+
+    # 初始化装甲板中心轨迹显示相关
+    armor_traj_output_file = video_path[:-4] + "_armor_center_trajectory.mp4"
+    armor_traj_video_writer = cv2.VideoWriter(armor_traj_output_file, fourcc, fps, (traj_width, traj_height))
+    armor_traj_img = np.zeros((traj_height, traj_width, 3), dtype=np.uint8) + 255  # 白底
+
     traj_scale = 80  # 像素/米
     traj_origin_x = traj_width // 2
     traj_origin_z = traj_height - 50
 
+    # 绘制坐标轴功能函数
+    def draw_traj_axes(img):
+        cv2.line(img, (traj_origin_x, 0), (traj_origin_x, traj_height), (200, 200, 200), 2)
+        cv2.line(img, (0, traj_origin_z), (traj_width, traj_origin_z), (200, 200, 200), 2)
+
+        # 绘制X轴刻度 (每0.1m)
+        x_range_m = traj_width / traj_scale / 2 + 1
+        for i in range(1, int(x_range_m * 10)):
+            val = i * 0.1
+            # 正半轴
+            px = int(traj_origin_x + val * traj_scale)
+            if px < traj_width:
+                cv2.line(img, (px, traj_origin_z), (px, traj_origin_z - 3), (200, 200, 200), 1)
+                if i % 5 == 0:  # 每0.5m标记数值
+                    cv2.line(img, (px, traj_origin_z), (px, traj_origin_z - 6), (150, 150, 150), 2)
+                    cv2.putText(img, f"{val:.1f}", (px - 10, traj_origin_z + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+
+            # 负半轴
+            mx = int(traj_origin_x - val * traj_scale)
+            if mx > 0:
+                cv2.line(img, (mx, traj_origin_z), (mx, traj_origin_z - 3), (200, 200, 200), 1)
+                if i % 5 == 0:  # 每0.5m标记数值
+                    cv2.line(img, (mx, traj_origin_z), (mx, traj_origin_z - 6), (150, 150, 150), 2)
+                    cv2.putText(img, f"-{val:.1f}", (mx - 15, traj_origin_z + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+
+        # 绘制Z轴刻度 (每0.1m) - 注意Z轴在图像上是向上的（y轴负方向）
+        z_range_m = traj_height / traj_scale
+        for i in range(1, int(z_range_m * 10)):
+            val = i * 0.1
+            py = int(traj_origin_z - val * traj_scale)
+            if py > 0:
+                cv2.line(img, (traj_origin_x, py), (traj_origin_x + 3, py), (200, 200, 200), 1)
+                if i % 5 == 0:  # 每0.5m标记数值
+                    cv2.line(img, (traj_origin_x, py), (traj_origin_x + 6, py), (150, 150, 150), 2)
+                    cv2.putText(img, f"{val:.1f}", (traj_origin_x + 10, py + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+
+        cv2.putText(img, "Z (m)", (traj_origin_x + 10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 50, 50), 2)
+        cv2.putText(img, "X (m)", (traj_width - 60, traj_origin_z - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 50, 50), 2)
+
+        # 添加方向标注
+        cv2.putText(img, "Forward", (traj_origin_x - 30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+        cv2.putText(img, "Right", (traj_width - 60, traj_origin_z + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+        cv2.putText(img, "Left", (20, traj_origin_z + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+        cv2.putText(img, "Camera Origin", (traj_origin_x - 50, traj_origin_z + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
     # 绘制坐标轴
-    cv2.line(traj_img, (traj_origin_x, 0), (traj_origin_x, traj_height), (200, 200, 200), 2)
-    cv2.line(traj_img, (0, traj_origin_z), (traj_width, traj_origin_z), (200, 200, 200), 2)
-
-    # 绘制X轴刻度 (每0.1m)
-    x_range_m = traj_width / traj_scale / 2 + 1
-    for i in range(1, int(x_range_m * 10)):
-        val = i * 0.1
-        # 正半轴
-        px = int(traj_origin_x + val * traj_scale)
-        if px < traj_width:
-            cv2.line(traj_img, (px, traj_origin_z), (px, traj_origin_z - 3), (200, 200, 200), 1)
-            if i % 5 == 0:  # 每0.5m标记数值
-                cv2.line(traj_img, (px, traj_origin_z), (px, traj_origin_z - 6), (150, 150, 150), 2)
-                cv2.putText(traj_img, f"{val:.1f}", (px - 10, traj_origin_z + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
-
-        # 负半轴
-        mx = int(traj_origin_x - val * traj_scale)
-        if mx > 0:
-            cv2.line(traj_img, (mx, traj_origin_z), (mx, traj_origin_z - 3), (200, 200, 200), 1)
-            if i % 5 == 0:  # 每0.5m标记数值
-                cv2.line(traj_img, (mx, traj_origin_z), (mx, traj_origin_z - 6), (150, 150, 150), 2)
-                cv2.putText(traj_img, f"-{val:.1f}", (mx - 15, traj_origin_z + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
-
-    # 绘制Z轴刻度 (每0.1m) - 注意Z轴在图像上是向上的（y轴负方向）
-    z_range_m = traj_height / traj_scale
-    for i in range(1, int(z_range_m * 10)):
-        val = i * 0.1
-        py = int(traj_origin_z - val * traj_scale)
-        if py > 0:
-            cv2.line(traj_img, (traj_origin_x, py), (traj_origin_x + 3, py), (200, 200, 200), 1)
-            if i % 5 == 0:  # 每0.5m标记数值
-                cv2.line(traj_img, (traj_origin_x, py), (traj_origin_x + 6, py), (150, 150, 150), 2)
-                cv2.putText(traj_img, f"{val:.1f}", (traj_origin_x + 10, py + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
-
-    cv2.putText(traj_img, "Z (m)", (traj_origin_x + 10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 50, 50), 2)
-    cv2.putText(traj_img, "X (m)", (traj_width - 60, traj_origin_z - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 50, 50), 2)
-
-    # 添加方向标注
-    cv2.putText(traj_img, "Forward", (traj_origin_x - 30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
-    cv2.putText(traj_img, "Right", (traj_width - 60, traj_origin_z + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
-    cv2.putText(traj_img, "Left", (20, traj_origin_z + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
-    cv2.putText(traj_img, "Camera Origin", (traj_origin_x - 50, traj_origin_z + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    draw_traj_axes(traj_img)
+    draw_traj_axes(armor_traj_img)
+    # 给装甲板轨迹视频添加标题
+    cv2.putText(armor_traj_img, "Armor Center Trajectory", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
 
     print("Start processing...")
     while True:
@@ -228,6 +241,7 @@ def run(video_path):
         if not ret:
             video_writer.release()
             traj_video_writer.release()
+            armor_traj_video_writer.release()
             cap.release()
             cv2.destroyAllWindows()
             print("video write to", output_file, "over")
@@ -272,6 +286,7 @@ def run(video_path):
 
         # 只有在有装甲板数据时才进行预测
         if len(robot.armor_plates_camera_positions) > 0:
+            detected_num = len(robot.armor_plates_camera_positions)
             try:
                 robot.use_robot_prediction()
                 # 获取预测结果
@@ -281,11 +296,34 @@ def run(video_path):
                     # ==================== 1. 绘制机器人中心点 ====================
                     robot_center_pixel = camera2xy(robot.center)
 
-                    # 绘制轨迹到平面图
-                    tx = int(traj_origin_x + robot.center[0] * traj_scale)
-                    ty = int(traj_origin_z - robot.center[2] * traj_scale)
-                    if 0 <= tx < traj_width and 0 <= ty < traj_height:
-                        cv2.circle(traj_img, (tx, ty), 2, (0, 0, 255), -1)
+                    # 绘制轨迹到平面图（只在有两块或更多装甲板检测到时绘制）
+                    if detected_num >= 2:
+                        tx = int(traj_origin_x + robot.center[0] * traj_scale)
+                        ty = int(traj_origin_z - robot.center[2] * traj_scale)
+                        if 0 <= tx < traj_width and 0 <= ty < traj_height:
+                            cv2.circle(traj_img, (tx, ty), 2, (0, 0, 255), -1)
+
+                    # 绘制正对装甲板中心轨迹到平面图
+                    if len(robot.armor_plates_camera_positions) > 0:
+                        # 找到Z值最小（离相机最近）的装甲板中心作为正对装甲板
+                        min_z = float('inf')
+                        closest_armor_center = None
+
+                        for armor_pts in robot.armor_plates_camera_positions:
+                            # 计算装甲板中心点 (4个角点的平均值)
+                            pts = np.array(armor_pts, dtype=float)
+                            center = np.mean(pts, axis=0)
+
+                            if center[2] < min_z:
+                                min_z = center[2]
+                                closest_armor_center = center
+
+                        if closest_armor_center is not None:
+                            ax = int(traj_origin_x + closest_armor_center[0] * traj_scale)
+                            ay = int(traj_origin_z - closest_armor_center[2] * traj_scale)
+                            if 0 <= ax < traj_width and 0 <= ay < traj_height:
+                                # 绘制蓝色点表示装甲板中心轨迹
+                                cv2.circle(armor_traj_img, (ax, ay), 2, (255, 0, 0), -1)
 
                     img_height, img_width = out_img.shape[:2]
 
@@ -643,6 +681,7 @@ def run(video_path):
         #             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         video_writer.write(out_img)
         traj_video_writer.write(traj_img)
+        armor_traj_video_writer.write(armor_traj_img)
         if is_show_video:
             cv2.imshow("vision output", out_img)
             cv2.waitKey(1)
@@ -667,4 +706,4 @@ if __name__ == "__main__":
     # run(video_path=r"./test_data/big_blue.avi")
     # run(video_path="./test_data/0323blue1.mp4")
     # run(video_path="./test_data/0323blue2.mp4")
-    run(video_path=r"C:\Users\sjj\Desktop\Deus-RM-CV - 副本\test_data\20251217_164517_captured.mp4")
+    run(video_path=r"C:\Users\sjj\Desktop\新建文件夹\Deus-RM-CV\test_data\20251217_164317_captured.mp4")
