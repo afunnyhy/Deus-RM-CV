@@ -164,10 +164,62 @@ def run(video_path):
     predict_armor = None
     predicted_armor_yaw = 0
     # 初始化机器人中心类
-    # ... existing code ...
-    # 初始化机器人中心类
     robot_center = TestRobotCenter()
     robot = GuardRobot()
+
+    # 初始化轨迹显示相关
+    traj_output_file = video_path[:-4] + "_trajectory.mp4"
+    traj_width, traj_height = 800, 800
+    traj_video_writer = cv2.VideoWriter(traj_output_file, fourcc, fps, (traj_width, traj_height))
+    traj_img = np.zeros((traj_height, traj_width, 3), dtype=np.uint8) + 255  # 白底
+    traj_scale = 80  # 像素/米
+    traj_origin_x = traj_width // 2
+    traj_origin_z = traj_height - 50
+
+    # 绘制坐标轴
+    cv2.line(traj_img, (traj_origin_x, 0), (traj_origin_x, traj_height), (200, 200, 200), 2)
+    cv2.line(traj_img, (0, traj_origin_z), (traj_width, traj_origin_z), (200, 200, 200), 2)
+
+    # 绘制X轴刻度 (每0.1m)
+    x_range_m = traj_width / traj_scale / 2 + 1
+    for i in range(1, int(x_range_m * 10)):
+        val = i * 0.1
+        # 正半轴
+        px = int(traj_origin_x + val * traj_scale)
+        if px < traj_width:
+            cv2.line(traj_img, (px, traj_origin_z), (px, traj_origin_z - 3), (200, 200, 200), 1)
+            if i % 5 == 0:  # 每0.5m标记数值
+                cv2.line(traj_img, (px, traj_origin_z), (px, traj_origin_z - 6), (150, 150, 150), 2)
+                cv2.putText(traj_img, f"{val:.1f}", (px - 10, traj_origin_z + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+
+        # 负半轴
+        mx = int(traj_origin_x - val * traj_scale)
+        if mx > 0:
+            cv2.line(traj_img, (mx, traj_origin_z), (mx, traj_origin_z - 3), (200, 200, 200), 1)
+            if i % 5 == 0:  # 每0.5m标记数值
+                cv2.line(traj_img, (mx, traj_origin_z), (mx, traj_origin_z - 6), (150, 150, 150), 2)
+                cv2.putText(traj_img, f"-{val:.1f}", (mx - 15, traj_origin_z + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+
+    # 绘制Z轴刻度 (每0.1m) - 注意Z轴在图像上是向上的（y轴负方向）
+    z_range_m = traj_height / traj_scale
+    for i in range(1, int(z_range_m * 10)):
+        val = i * 0.1
+        py = int(traj_origin_z - val * traj_scale)
+        if py > 0:
+            cv2.line(traj_img, (traj_origin_x, py), (traj_origin_x + 3, py), (200, 200, 200), 1)
+            if i % 5 == 0:  # 每0.5m标记数值
+                cv2.line(traj_img, (traj_origin_x, py), (traj_origin_x + 6, py), (150, 150, 150), 2)
+                cv2.putText(traj_img, f"{val:.1f}", (traj_origin_x + 10, py + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+
+    cv2.putText(traj_img, "Z (m)", (traj_origin_x + 10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 50, 50), 2)
+    cv2.putText(traj_img, "X (m)", (traj_width - 60, traj_origin_z - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (50, 50, 50), 2)
+
+    # 添加方向标注
+    cv2.putText(traj_img, "Forward", (traj_origin_x - 30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+    cv2.putText(traj_img, "Right", (traj_width - 60, traj_origin_z + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+    cv2.putText(traj_img, "Left", (20, traj_origin_z + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+    cv2.putText(traj_img, "Camera Origin", (traj_origin_x - 50, traj_origin_z + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
     print("Start processing...")
     while True:
         # 读取视频流的一帧
@@ -175,6 +227,7 @@ def run(video_path):
         # orig_frame = cv2.flip(orig_frame, -1)
         if not ret:
             video_writer.release()
+            traj_video_writer.release()
             cap.release()
             cv2.destroyAllWindows()
             print("video write to", output_file, "over")
@@ -227,6 +280,13 @@ def run(video_path):
 
                     # ==================== 1. 绘制机器人中心点 ====================
                     robot_center_pixel = camera2xy(robot.center)
+
+                    # 绘制轨迹到平面图
+                    tx = int(traj_origin_x + robot.center[0] * traj_scale)
+                    ty = int(traj_origin_z - robot.center[2] * traj_scale)
+                    if 0 <= tx < traj_width and 0 <= ty < traj_height:
+                        cv2.circle(traj_img, (tx, ty), 2, (0, 0, 255), -1)
+
                     img_height, img_width = out_img.shape[:2]
 
                     if (0 <= robot_center_pixel[0] < img_width and
@@ -370,11 +430,12 @@ def run(video_path):
 
                                     # 绘制指示箭头
                                     arrow_color = (0, 255, 0) if i >= len(robot.armor_plates_camera_positions) else (255, 0, 0)
+                                    arrow_label = "Detected" if i < len(robot.armor_plates_camera_positions) else "Predicted"
                                     cv2.arrowedLine(out_img,
                                                     (edge_x - int(30 * dir_x), edge_y - int(30 * dir_y)),
                                                     (edge_x, edge_y),
                                                     arrow_color, 2, tipLength=0.3)
-                                    cv2.putText(out_img, f"{label_prefix} {i + 1}",
+                                    cv2.putText(out_img, f"{arrow_label} {i + 1}",
                                                 (edge_x + 10, edge_y),
                                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, arrow_color, 2)
 
@@ -534,8 +595,16 @@ def run(video_path):
 
                     # ==================== 5. 在图像顶部显示状态信息 ====================
                     detected_count = len(robot.armor_plates_camera_positions)
-                    predicted_count = len(armor_centers) - detected_count if hasattr(robot,
-                                                                                     'armor_center_point') and robot.armor_center_point else 0
+
+                    total_centers_count = 0
+                    if hasattr(robot, 'armor_center_point') and robot.armor_center_point:
+                        temp_centers = robot.armor_center_point
+                        if isinstance(temp_centers, list) and len(temp_centers) > 0 and isinstance(temp_centers[0], list):
+                            total_centers_count = len(temp_centers[0])
+                        elif isinstance(temp_centers, list):
+                             total_centers_count = len(temp_centers)
+
+                    predicted_count = max(0, total_centers_count - detected_count)
 
                     status_y = 30
                     cv2.putText(out_img, f"Robot Center: X={robot.center[0]:.2f}m, Z={robot.center[2]:.2f}m",
@@ -573,6 +642,7 @@ def run(video_path):
         # cv2.putText(out_img, f"yaw:{predicted_armor_yaw:.2f}", (int(predict_armor[0]), int(predict_armor[1])),
         #             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         video_writer.write(out_img)
+        traj_video_writer.write(traj_img)
         if is_show_video:
             cv2.imshow("vision output", out_img)
             cv2.waitKey(1)
@@ -597,4 +667,4 @@ if __name__ == "__main__":
     # run(video_path=r"./test_data/big_blue.avi")
     # run(video_path="./test_data/0323blue1.mp4")
     # run(video_path="./test_data/0323blue2.mp4")
-    run(video_path=r"C:\Users\sjj\Desktop\Deus-RM-CV - 副本\test_data\20251217_164449_captured.mp4")
+    run(video_path=r"C:\Users\sjj\Desktop\Deus-RM-CV - 副本\test_data\20251217_164517_captured.mp4")
