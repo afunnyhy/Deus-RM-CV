@@ -45,19 +45,12 @@ class SpinRadiusManager:
     def update_dual_plate(self, r1, r2, y1, y2, c1_x, c2_x, current_yaw, center_y):
         """
         [双板模式 - 绝对校准]
-        参数:
-          r1, r2: 两块板的物理半径
-          y1, y2: 两块板的Y坐标 (相机坐标系)
-          c1_x, c2_x: X坐标 (用于左右判断)
-          current_yaw: 偏航角
-          center_y: 计算出的机器人中心Y坐标 (基准)
         """
         current_time = time.time()
         dt = current_time - self.last_update_time
         self.last_update_time = current_time
 
         # 1. 识别长短板 (基于半径大小)
-        # 假设 r1 对应 idx1, r2 对应 idx2
         if r1 > r2:
             l_r, s_r = r1, r2
             l_y, s_y = y1, y2
@@ -70,7 +63,7 @@ class SpinRadiusManager:
         self.long_radius = self.long_radius * (1 - alpha) + l_r * alpha
         self.short_radius = self.short_radius * (1 - alpha) + s_r * alpha
 
-        # 更新高度偏移: Offset = Plate_Y - Center_Y
+        # 更新高度偏移
         curr_l_offset = l_y - center_y
         curr_s_offset = s_y - center_y
 
@@ -91,14 +84,11 @@ class SpinRadiusManager:
 
         self.last_armor_yaw = current_yaw
 
-        # 4. 旋转方向锁定逻辑 (Determining Next Survivor)
-        # 根据 X 坐标判断左右: c1_x < c2_x 意味着 1在左, 2在右
+        # 4. 旋转方向锁定逻辑
         if c1_x < c2_x:
-            # left=1, right=2
             r_right = r2
             r_left = r1
         else:
-            # left=2, right=1
             r_right = r1
             r_left = r2
 
@@ -106,15 +96,12 @@ class SpinRadiusManager:
         ROTATION_THRESHOLD = 0.1
 
         if self.omega > ROTATION_THRESHOLD:
-            # CCW (逆时针, 向左转) -> 保留右边的板
             target_radius = r_right
         elif self.omega < -ROTATION_THRESHOLD:
-            # CW (顺时针, 向右转) -> 保留左边的板
             target_radius = r_left
 
         # 5. 更新状态机
         if target_radius is not None:
-            # 判断保留下来的板是长还是短
             dist_long = abs(target_radius - self.long_radius)
             dist_short = abs(target_radius - self.short_radius)
 
@@ -123,13 +110,11 @@ class SpinRadiusManager:
             else:
                 self.current_state = 1  # Short
 
-            # 重置积分
             self.accumulated_angle = 0.0
 
     def predict_single_plate(self, current_yaw):
         """
         [单板模式 - 预测]
-        返回: (predicted_radius, predicted_y_offset)
         """
         current_time = time.time()
         dt = current_time - self.last_update_time
@@ -154,15 +139,14 @@ class SpinRadiusManager:
         if abs(self.accumulated_angle) >= pi_half:
             switches = int(abs(self.accumulated_angle) / pi_half)
             if switches % 2 != 0:
-                self.current_state = 1 - self.current_state  # Toggle
+                self.current_state = 1 - self.current_state
 
             sign = 1 if self.accumulated_angle > 0 else -1
             self.accumulated_angle -= sign * switches * pi_half
 
-        # 3. 返回对应的参数
-        if self.current_state == 0:  # Long
+        if self.current_state == 0:
             return self.long_radius, self.long_y_offset
-        else:  # Short
+        else:
             return self.short_radius, self.short_y_offset
 
 
@@ -177,6 +161,9 @@ class TestRobotCenter:
             robot_armor_coordinate = []
         self.robot_armor_coordinate = robot_armor_coordinate
         self.armor_center_point = []
+
+        # [新增] 用于存储双板模式下计算得到的夹角 (单位: 度)
+        self.last_dual_angle_deg = 0.0
 
     def get_armor_yaw(self, normal_vec):
         return math.atan2(normal_vec[0], normal_vec[2])
@@ -204,18 +191,39 @@ class TestRobotCenter:
         except np.linalg.LinAlgError:
             return None
 
+        # 计算得到的机器人中心 (XZ平面)
         center_xz = p1_2d + t * d1_2d
+
+        # =========================================================
+        # [新增] 计算两装甲板中心点与机器人中心点所成的角
+        # =========================================================
+        # 向量 V1: 机器人中心 -> 装甲板1
+        vec1 = p1_2d - center_xz
+        # 向量 V2: 机器人中心 -> 装甲板2
+        vec2 = p2_2d - center_xz
+
+        norm1 = np.linalg.norm(vec1)
+        norm2 = np.linalg.norm(vec2)
+
+        if norm1 > 1e-4 and norm2 > 1e-4:
+            # 计算点积的余弦值
+            cos_theta = np.dot(vec1, vec2) / (norm1 * norm2)
+            # 防止浮点误差导致 acos 越界
+            cos_theta = np.clip(cos_theta, -1.0, 1.0)
+            # 计算角度并转换为度数
+            self.last_dual_angle_deg = np.degrees(np.arccos(cos_theta))
+        else:
+            self.last_dual_angle_deg = 0.0
+        # =========================================================
 
         # 计算物理半径
         r1 = np.linalg.norm(center_xz - p1_2d)
         r2 = np.linalg.norm(center_xz - p2_2d)
 
-        # 计算平均高度作为 Robot Center Y (基准)
-        # 注意：这里假设 Center Y 位于两板高度的中间。
-        # 如果机器人重心偏向某一方，这个基准可能会上下浮动，但相对 offset 是准的。
+        # 计算平均高度
         center_y = (c1[1] + c2[1]) / 2.0
 
-        # 更新管理器 (传入高度信息)
+        # 更新管理器
         yaw = self.get_armor_yaw(n1)
         TestRobotCenter.spin_manager.update_dual_plate(
             r1, r2, c1[1], c2[1], c1[0], c2[0], yaw, center_y
@@ -226,6 +234,9 @@ class TestRobotCenter:
     def get_robot_center_by_one_armor(self, idx=0):
         """单板解算"""
         self.armor_center_point.clear()
+        # 单板模式下无法计算“两板夹角”，重置为0
+        self.last_dual_angle_deg = 0.0
+
         center_armor, normal_unit, _ = self.get_armor_normal_vector(self.robot_armor_coordinate[idx])
 
         if center_armor is None or normal_unit is None: return None
@@ -242,8 +253,7 @@ class TestRobotCenter:
             normal_xz /= norm_xz
             center_xz = np.array([center_armor[0], center_armor[2]]) - normal_xz * pred_r
 
-            # 3. Y轴高度修正 (核心修改)
-            # Armor_Y = Center_Y + Offset  =>  Center_Y = Armor_Y - Offset
+            # 3. Y轴高度修正
             center_y = center_armor[1] - pred_offset
 
             return np.array([center_xz[0], center_y, center_xz[1]])
@@ -281,6 +291,9 @@ class GuardRobot:
         self.center = None
         self.armor_center_point = []
 
+        # [新增] 对外暴露的夹角属性
+        self.angle_between_plates = 0.0
+
         # Z轴滤波
         self.z_filter_val = None
         self.Z_ALPHA = 0.1
@@ -297,6 +310,9 @@ class GuardRobot:
             raw_center = self.test_robot_center.get_robot_center_by_one_armor(0)
         else:
             raw_center = None
+
+        # [新增] 将底层计算的角度更新到 GuardRobot 属性中
+        self.angle_between_plates = self.test_robot_center.last_dual_angle_deg
 
         if raw_center is not None:
             # Z轴滤波逻辑
@@ -325,7 +341,6 @@ class GuardRobot:
 
             # 1. 对面装甲板 (中心对称，高度一致)
             opp = 2 * self.center - known
-            # 高度直接使用当前板高度，或者 CenterY + CurrentOffset
             opp[1] = known[1]
             self.armor_center_point.append(opp.tolist())
 
@@ -365,3 +380,8 @@ class GuardRobot:
         self.find_robot_center()
         if self.center is not None:
             self.get_another_armor_plate_center_by_center()
+
+            # 调试或打印逻辑：如果有两个板，显示角度
+            if len(self.armor_plates_camera_positions) >= 2:
+                # print(f"Dual Plate Angle: {self.angle_between_plates:.2f} degrees")
+                pass

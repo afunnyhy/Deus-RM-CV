@@ -637,30 +637,55 @@ def run(video_path):
                     total_centers_count = 0
                     if hasattr(robot, 'armor_center_point') and robot.armor_center_point:
                         temp_centers = robot.armor_center_point
-                        if isinstance(temp_centers, list) and len(temp_centers) > 0 and isinstance(temp_centers[0], list):
+                        if isinstance(temp_centers, list) and len(temp_centers) > 0 and isinstance(
+                                temp_centers[0], list):
                             total_centers_count = len(temp_centers[0])
                         elif isinstance(temp_centers, list):
-                             total_centers_count = len(temp_centers)
+                            total_centers_count = len(temp_centers)
 
                     predicted_count = max(0, total_centers_count - detected_count)
 
                     status_y = 30
-                    cv2.putText(out_img, f"Robot Center: X={robot.center[0]:.2f}m, Z={robot.center[2]:.2f}m",
+                    # 1. 显示机器人中心坐标
+                    cv2.putText(out_img,
+                                f"Robot Center: X={robot.center[0]:.2f}m, Z={robot.center[2]:.2f}m",
                                 (10, status_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.putText(out_img, f"Armors: Detected={detected_count}, Predicted={predicted_count}",
+
+                    # 2. 显示装甲板数量
+                    cv2.putText(out_img,
+                                f"Armors: Detected={detected_count}, Predicted={predicted_count}",
                                 (10, status_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-                    # 添加图例
-                    legend_y = status_y + 70
-                    cv2.putText(out_img, "Legend:", (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    # 3. [新增] 显示双板夹角 (当检测到 >= 2 个装甲板时)
+                    next_y = status_y + 60
+                    if detected_count >= 2:
+                        # 获取上一轮添加到 GuardRobot 中的 angle_between_plates 属性
+                        # 使用 getattr 防止旧版本类定义报错
+                        angle_val = getattr(robot, 'angle_between_plates', 0.0)
+
+                        # 绘制角度信息 (使用青色/黄色高亮)
+                        cv2.putText(out_img, f"Dual Angle: {angle_val:.2f} deg",
+                                    (10, next_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        next_y += 30  # 下移一行，为图例腾出空间
+
+                    # 添加图例 (位置根据上方文本动态调整)
+                    legend_y = next_y + 10
+                    cv2.putText(out_img, "Legend:", (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                (255, 255, 255), 2)
+
                     cv2.circle(out_img, (100, legend_y - 5), 6, (0, 0, 255), -1)
-                    cv2.putText(out_img, ": Robot Center", (110, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    cv2.putText(out_img, ": Robot Center", (110, legend_y), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
                                 (255, 255, 255), 1)
+
                     cv2.circle(out_img, (230, legend_y - 5), 5, (255, 0, 0), -1)
-                    cv2.putText(out_img, ": Detected Armor", (240, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    cv2.putText(out_img, ": Detected Armor", (240, legend_y), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
                                 (255, 255, 255), 1)
+
                     cv2.circle(out_img, (380, legend_y - 5), 5, (0, 255, 0), -1)
-                    cv2.putText(out_img, ": Predicted Armor", (390, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    cv2.putText(out_img, ": Predicted Armor", (390, legend_y), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
                                 (255, 255, 255), 1)
 
             except Exception as e:
@@ -699,11 +724,11 @@ def run(video_path):
 
 if __name__ == "__main__":
     # 根据视频文件名自动选择颜色，文件名中包含"red"或"blue"
-    # run(video_path=r"./test_data/0325blue.mp4")
+    run(video_path=r"./test_data/0325blue.mp4")
     # run(video_path=r"./test_data/small_blue.avi")
     # run(video_path=r"./test_data/small_red.avi")
     # run(video_path=r"./test_data/big_red.avi")
     # run(video_path=r"./test_data/big_blue.avi")
     # run(video_path="./test_data/0323blue1.mp4")
     # run(video_path="./test_data/0323blue2.mp4")
-    run(video_path=r"C:\Users\sjj\Desktop\新建文件夹\Deus-RM-CV\test_data\20251217_164317_captured.mp4")
+    # run(video_path=r"C:\Users\sjj\Desktop\新建文件夹\Deus-RM-CV\test_data\20251217_164317_captured.mp4")
