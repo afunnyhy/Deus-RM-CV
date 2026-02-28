@@ -724,11 +724,11 @@ def run(video_path):
 
 if __name__ == "__main__":
     # 根据视频文件名自动选择颜色，文件名中包含"red"或"blue"
-    run(video_path=r"./test_data/0325blue.mp4")
+    # run(video_path=r"./test_data/0325blue.mp4")
     # run(video_path=r"./test_data/small_blue.avi")
     # run(video_path=r"./test_data/small_red.avi")
     # run(video_path=r"./test_data/big_red.avi")
     # run(video_path=r"./test_data/big_blue.avi")
     # run(video_path="./test_data/0323blue1.mp4")
     # run(video_path="./test_data/0323blue2.mp4")
-    # run(video_path=r"C:\Users\sjj\Desktop\新建文件夹\Deus-RM-CV\test_data\20251217_164317_captured.mp4")
+    run(video_path=r"C:\Users\sjj\Desktop\新建文件夹\Deus-RM-CV\test_data\20251217_164317_captured.mp4")
