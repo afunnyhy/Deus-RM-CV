@@ -122,14 +122,14 @@ def run(video_path):
     """默认通信发送的pitch和yaw角度为0"""
     # 测试敌方颜色
     test_color = Color.RED
-    if video_path.find("red") != -1:
-        test_color = Color.RED
-    elif video_path.find("blue") != -1:
-        test_color = Color.BLUE
-    if test_color == Color.RED:
-        test_color = Color.BLUE
-    else:
-        test_color = Color.RED
+    # if video_path.find("red") != -1:
+    #     test_color = Color.RED
+    # elif video_path.find("blue") != -1:
+    #     test_color = Color.BLUE
+    # if test_color == Color.RED:
+    #     test_color = Color.BLUE
+    # else:
+    #     test_color = Color.RED
     output_file = video_path[:-4] + "_output.mp4"
     cap = cv2.VideoCapture(video_path)
     ret = cap.isOpened()
@@ -731,4 +731,4 @@ if __name__ == "__main__":
     # run(video_path=r"./test_data/big_blue.avi")
     # run(video_path="./test_data/0323blue1.mp4")
     # run(video_path="./test_data/0323blue2.mp4")
-    run(video_path=r"C:\Users\sjj\Desktop\新建文件夹\Deus-RM-CV\test_data\20251217_164317_captured.mp4")
+    run(video_path=r"C:\Users\sjj\Desktop\新建文件夹\Deus-RM-CV\test_data\20251217_163948_captured.mp4")

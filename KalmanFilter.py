@@ -276,9 +276,9 @@ class KalmanFilter6D:
 
     def __init__(self,
                  measure_dim=3,
-                 init_cov=100.0,
-                 measure_noise=0.1,
-                 process_noise=100.0,
+                 init_cov=1.0,
+                 measure_noise=0.001,
+                 process_noise=0.001,
                  x=0, y=0, z=0,
                  vx=0, vy=0, vz=0):
         # 固定 6 维: 位置(3) + 速度(3)

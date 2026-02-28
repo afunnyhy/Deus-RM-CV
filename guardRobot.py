@@ -249,7 +249,7 @@ class TestRobotCenter:
 # 核心类 3: 机器人封装 (整合 KF 逻辑)
 # ==========================================
 class GuardRobot:
-    def __init__(self, armor_plates=None, color: Color = None, troop_type: TroopType = None, enable_kf: bool = True):
+    def __init__(self, armor_plates=None, color: Color = None, troop_type: TroopType = None, enable_kf: bool =True):
         """
         :param armor_plates: 输入的装甲板列表 (ArmorPlate 对象或坐标列表)
         :param enable_kf: [控制开关] 是否启用卡尔曼滤波对角点进行平滑
@@ -303,7 +303,7 @@ class GuardRobot:
             if idx not in self.kf_map:
                 # 初始化：为该装甲板的 4 个角点分别创建 6D 卡尔曼滤波器
                 self.kf_map[idx] = [
-                    KalmanFilter6D(measure_dim=3, init_cov=10.0, measure_noise=0.5, process_noise=10.0,
+                    KalmanFilter6D(measure_dim=3, init_cov=1000.0, measure_noise=0.1, process_noise=5000.0,
                                    x=p[0], y=p[1], z=p[2])
                     for p in points
                 ]
