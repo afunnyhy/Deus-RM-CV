@@ -164,7 +164,7 @@ class SpinRadiusManager:
 
         self.last_armor_yaw = current_yaw
 
-        # 积分角度，用于推测是否切换了板面
+        # 积分角度，用于推测是否切换了板面1
         # 假设板面之间间隔 90度 (Pi/2)
         self.accumulated_angle += self.omega * dt
         pi_half = np.pi / 2
