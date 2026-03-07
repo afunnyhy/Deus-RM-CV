@@ -4,6 +4,8 @@ import time
 import math
 from collections import deque
 
+from sympy.abc import theta
+
 # 假设这些类定义在 all_type 模块中
 from all_type import ArmorPlate, Color, TroopType
 
@@ -35,8 +37,9 @@ class SpinRadiusManager:
 
     def __init__(self):
         # 初始设定的长半径（前后？）和短半径（左右？）
-        self.long_radius = 0.25
-        self.short_radius = 0.20
+        # [修改] 按照要求将半径固定 (这里示例改为用户可能的真实值，如0.28/0.22，用户可自行微调)
+        self.long_radius = 0.28
+        self.short_radius = 0.22
         # 初始设定的高度偏移
         self.long_y_offset = 0.0
         self.short_y_offset = 0.0
@@ -51,8 +54,12 @@ class SpinRadiusManager:
 
         self.omega = 0.0  # 估算的旋转角速度 (rad/s)
         self.omega_alpha = 0.2 # 角速度低通滤波系数
-        self.is_initialized = False # 是否已完成初次双板校准
-
+        self.is_initialized = True # [修改] 半径已写死，视为已初始化
+        self.T=1.0
+    def find_shoot_time(self):
+        theta=self.omega*self.T
+        shoot_angle=self.accumulated_angle-theta
+        return shoot_angle
     def update_dual_plate(self, r1, r2, y1, y2, c1_x, c2_x, current_yaw, center_y):
         """
         [双板模式 - 绝对校准]
@@ -80,6 +87,7 @@ class SpinRadiusManager:
 
         # 2. 更新结构参数 (平滑滤波)：使用指数移动平均平滑参数震荡
         alpha = 0.1 #if self.is_initialized else 1.0 # 初次直接赋值，后续平滑更新
+        # [修改] 半径已写死，不再动态更新半径
         # self.long_radius = self.long_radius * (1 - alpha) + l_r * alpha
         # self.short_radius = self.short_radius * (1 - alpha) + s_r * alpha
 
@@ -283,8 +291,22 @@ class TestRobotCenter:
 
         if norm_xz > 1e-4:
             normal_xz /= norm_xz # 归一化
-            # 中心 = 装甲板中心 - 法向量 * 半径
-            center_xz = np.array([center_armor[0], center_armor[2]]) - normal_xz * pred_r
+
+            # [修改] 动态判定方向：计算两个可能的中心点，取Z轴更大的那个（即离相机更远的那个）
+            # 这是基于机器人中心一定位于装甲板后方（深度更深）的物理约束
+
+            # 候选1：减法
+            cand1 = np.array([center_armor[0], center_armor[2]]) - normal_xz * pred_r
+            # 候选2：加法
+            cand2 = np.array([center_armor[0], center_armor[2]]) + normal_xz * pred_r
+
+            # 比较 Z 值 (下标1)
+            # cand1[1] 和 cand2[1] 分别对应 Z 坐标
+            if cand1[1] > cand2[1]:
+                center_xz = cand1
+            else:
+                center_xz = cand2
+
             # 高度修正
             center_y = center_armor[1] - pred_offset
             return np.array([center_xz[0], center_y, center_xz[1]])
