@@ -49,33 +49,29 @@ class SpinRadiusManager:
 
         # --- 积分与预测 ---
         self.accumulated_angle = 0.0 # 累积旋转角度，用于状态切换预测
-        self.last_update_time = time.time()
+        # self.last_update_time = time.time() # [修改] 不再内部记录时间
         self.last_armor_yaw = 0.0 # 上一帧的装甲板 Yaw 角
 
         self.omega = 0.0  # 估算的旋转角速度 (rad/s)
-        self.omega_alpha = 0.2 # 角速度低通滤波系数
+        self.omega_alpha = 0.95 # 角速度低通滤波系数
+
+        # [新增] 是否启用角速度滤波控制开关，默认为 False (不滤波)
+        self.enable_omega_filter = True
+
         self.is_initialized = True # [修改] 半径已写死，视为已初始化
         self.T=1.0
     def find_shoot_time(self):
         theta=self.omega*self.T
         shoot_angle=self.accumulated_angle-theta
         return shoot_angle
-    def update_dual_plate(self, r1, r2, y1, y2, c1_x, c2_x, current_yaw, center_y):
+
+    # [修改] update_dual_plate 接收外部传入的 dt
+    def update_dual_plate(self, r1, r2, y1, y2, c1_x, c2_x, current_yaw, center_y, dt):
         """
         [双板模式 - 绝对校准]
         当视觉能同时看到两个装甲板时调用此函数。
-        利用两个装甲板的几何关系直接计算并更新机器人的物理参数（长短半径、高度差）。
-
-        参数:
-        r1, r2: 两个装甲板到解算中心的距离
-        y1, y2: 两个装甲板的高度(Y坐标)
-        c1_x, c2_x: 两个装甲板的 X 坐标 (用于判断左右关系)
-        current_yaw: 当前装甲板朝向角
-        center_y: 机器人中心高度
         """
-        current_time = time.time()
-        dt = current_time - self.last_update_time
-        self.last_update_time = current_time
+        # [修改] 移除内部时间计算，使用传入的 dt
 
         # 1. 识别长短板：假设距离中心更远的是长半径面，近的是短半径面
         if r1 > r2:
@@ -105,11 +101,17 @@ class SpinRadiusManager:
         while diff_yaw > np.pi: diff_yaw -= 2 * np.pi
         while diff_yaw < -np.pi: diff_yaw += 2 * np.pi
 
-        if dt > 0.001:
-            raw_omega = diff_yaw / dt
-            # 简单的异常值过滤，只更新合理的转速
-            if abs(raw_omega) < 15.0:
-                self.omega = self.omega * (1 - self.omega_alpha) + raw_omega * self.omega_alpha
+        # [修改] 增加异常跳变过滤 (切板保护)
+        # 如果两帧之间角度变化超过 0.8 rad (约45度)，认为发生了切板或异常，不更新 omega
+        if abs(diff_yaw) < 0.8:
+            if dt > 0.001:
+                raw_omega = diff_yaw / dt
+                # 简单的异常值过滤，只更新合理的转速
+                if abs(raw_omega) < 15.0:
+                    if self.enable_omega_filter:
+                        self.omega = raw_omega/abs(raw_omega)*(abs(self.omega) * (1 - self.omega_alpha) + abs(raw_omega) * self.omega_alpha)
+                    else:
+                        self.omega = raw_omega
 
         self.last_armor_yaw = current_yaw
 
@@ -136,21 +138,14 @@ class SpinRadiusManager:
             self.current_state = 0 if dist_long < dist_short else 1
             self.accumulated_angle = 0.0 # 重置角度积分
 
-    def predict_single_plate(self, current_yaw):
+    # [修改] predict_single_plate 接收外部传入的 dt
+    def predict_single_plate(self, current_yaw, dt):
         """
         [单板模式 - 预测]
         当只看到一个装甲板时，无法直接得知这是长板侧还是短板侧。
         利用角速度积分推算当前转到了哪一面。
-
-        参数:
-        current_yaw: 当前观测到的装甲板 Yaw 角
-
-        返回:
-        (预测半径, 预测高度偏移)
         """
-        current_time = time.time()
-        dt = current_time - self.last_update_time
-        self.last_update_time = current_time
+        # [修改] 移除内部时间计算，使用传入的 dt
 
         # 计算 yaw 变化量
         diff_yaw = current_yaw - self.last_armor_yaw
@@ -158,10 +153,14 @@ class SpinRadiusManager:
         while diff_yaw < -np.pi: diff_yaw += 2 * np.pi
 
         # 持续更新角速度估计
-        if dt > 0.001:
-            raw_omega = diff_yaw / dt
-            if abs(raw_omega) > 0.2 and abs(raw_omega) < 15.0:
-                self.omega = self.omega * (1 - self.omega_alpha) + raw_omega * self.omega_alpha
+        if abs(diff_yaw) < 0.8:
+            if dt > 0.001:
+                raw_omega = diff_yaw / dt
+                if 0.2 < abs(raw_omega) < 15.0:
+                    if self.enable_omega_filter:
+                        self.omega = self.omega * (1 - self.omega_alpha) + raw_omega * self.omega_alpha
+                    else:
+                        self.omega = raw_omega
 
         self.last_armor_yaw = current_yaw
 
@@ -206,7 +205,7 @@ class TestRobotCenter:
         """根据法向量计算 Yaw 角 (XZ平面投影)"""
         return math.atan2(normal_vec[0], normal_vec[2])
 
-    def get_robot_center_by_two_armor(self, idx1=0, idx2=1):
+    def get_robot_center_by_two_armor(self, dt, idx1=0, idx2=1):
         """
         [双板解算策略]
         当能看到两个装甲板时，利用两个板的中心点和法向量，求解刚体中心。
@@ -265,11 +264,11 @@ class TestRobotCenter:
         # 更新自旋管理器模型
         yaw = self.get_armor_yaw(n1)
         TestRobotCenter.spin_manager.update_dual_plate(
-            r1, r2, c1[1], c2[1], c1[0], c2[0], yaw, center_y
+            r1, r2, c1[1], c2[1], c1[0], c2[0], yaw, center_y, dt
         )
         return np.array([center_xz[0], center_y, center_xz[1]], dtype=float)
 
-    def get_robot_center_by_one_armor(self, idx=0):
+    def get_robot_center_by_one_armor(self, dt, idx=0):
         """
         [单板解算策略]
         当只看到一个装甲板时，利用法向量方向，并在法向量方向上回退 "预测半径" 的距离来估算中心。
@@ -283,7 +282,7 @@ class TestRobotCenter:
 
         # 1. 获取当前 Yaw，并询问管理器当前的半径和高度偏移
         curr_yaw = self.get_armor_yaw(normal_unit)
-        pred_r, pred_offset = TestRobotCenter.spin_manager.predict_single_plate(curr_yaw)
+        pred_r, pred_offset = TestRobotCenter.spin_manager.predict_single_plate(curr_yaw, dt)
 
         # 2. XZ 平面上回退半径距离
         normal_xz = np.array([normal_unit[0], normal_unit[2]], dtype=float)
@@ -335,6 +334,12 @@ class TestRobotCenter:
         v1 = p2 - p1
         v2 = p3 - p1
         n = np.cross(v1, v2) # 叉乘得法向量
+
+        # [修改] 强制统一法向量方向，解决法向量 Z 轴正负跳动导致的 Yaw 角 180 度突变问题
+        # 这里强制 Z 分量为正 (指向远离相机方向，与之前的单板解算逻辑匹配)
+        if n[2] < 0:
+            n = -n
+
         norm = np.linalg.norm(n)
         # 归一化
         return (center, n / norm, None) if norm > 1e-6 else (None, None, None)
@@ -383,6 +388,12 @@ class GuardRobot:
 
         # 时间戳记录，用于计算 dt
         self.last_timestamp = time.time()
+
+        # [新增] 记录程序启动时间，用于输出相对时间
+        self.program_start_time = time.time()
+
+        # [新增] 总延迟时间 self.T (包含飞行时间+系统延迟)，默认 0.2s，可根据实际情况调整
+        self.T = 0.2
 
     def cal_armor(self):
         """检查是否有有效的装甲板数据"""
@@ -450,7 +461,7 @@ class GuardRobot:
 
         return filtered_armors
 
-    def find_robot_center(self):
+    def find_robot_center(self, dt):
         """
         计算机器人中心
         注意：此函数依赖 self.test_robot_center.robot_armor_coordinate
@@ -460,9 +471,9 @@ class GuardRobot:
 
         # 根据可视装甲板数量选择解算策略
         if len(self.test_robot_center.robot_armor_coordinate) >= 2:
-            raw_center = self.test_robot_center.get_robot_center_by_two_armor()
+            raw_center = self.test_robot_center.get_robot_center_by_two_armor(dt)
         elif len(self.test_robot_center.robot_armor_coordinate) == 1:
-            raw_center = self.test_robot_center.get_robot_center_by_one_armor(0)
+            raw_center = self.test_robot_center.get_robot_center_by_one_armor(dt, 0)
         else:
             raw_center = None
 
@@ -539,6 +550,58 @@ class GuardRobot:
             self.armor_center_point.append([s1_xz[0], side_y, s1_xz[1]])
             self.armor_center_point.append([s2_xz[0], side_y, s2_xz[1]])
 
+    def predict_shooting_times(self) -> List[float]:
+        """
+        [修改功能] 预测适合发射子弹的时间节点
+        逻辑：
+        1. 仅当画面中只有一块装甲板时触发。
+        2. 以当前时刻和当前板的角度为基准。
+        3. 预测未来旋转 90, 180, 270... 度 (90的倍数) 的时刻。
+        4. 发射时间 = 预测到达时刻 - 延迟(self.T)。
+        5. 生成未来 10 个预测点。
+        """
+        predicted_times = []
+
+        # 1. 触发条件：只出现一块装甲板
+        if len(self.armor_plates_camera_positions) != 1:
+            return []
+
+        mgr = TestRobotCenter.spin_manager
+        omega = mgr.omega
+
+        # 必须有有效转速，否则无法预测周期
+        if abs(omega) < 0.1:
+            return []
+
+        current_time = self.last_timestamp # 当前帧的绝对时间
+        period_angle = np.pi / 2 # 90度
+
+        # 2. 生成 10 个预测点 (90度, 180度 ... 900度)
+        print(f"[Prediction] Base Time: {current_time - self.program_start_time:.4f}s | Omega: {omega:.3f} rad/s")
+
+        for k in range(1, 11):
+            # 需要转过的角度 (弧度)
+            angle_to_rotate = k * period_angle
+
+            # 需要的时间 (无论正反转，时间都是正的 distance/speed)
+            time_to_rotate = angle_to_rotate / abs(omega)
+
+            # 目标时刻 (装甲板到位时刻)
+            target_arrival_time = current_time + time_to_rotate
+
+            # 击打时刻 (提前量)
+            shoot_time_abs = target_arrival_time - self.T
+
+            # 过滤掉已经过去的时间点 (或者保留看用户需求? 通常只关注未来的)
+            # 这里我们输出所有计算结果，但在现在的应用中，小于 current_time 的大概率已经来不及了
+
+            if shoot_time_abs > current_time:
+                rel_shoot_time = shoot_time_abs - self.program_start_time
+                predicted_times.append(rel_shoot_time)
+                print(f"  -> Shot {k} (+{int(k*90)}deg): {rel_shoot_time:.4f}s")
+
+        return predicted_times
+
     def use_robot_prediction(self):
         """
         [主入口函数] 流程控制
@@ -573,11 +636,14 @@ class GuardRobot:
         self.test_robot_center.robot_armor_coordinate = target_coordinates
 
         # --- 3. 计算中心 ---
-        self.find_robot_center()
+        self.find_robot_center(dt)
 
         # --- 4. 补全虚拟板 ---
         if self.center is not None:
             self.get_another_armor_plate_center_by_center()
+
+            # [新增] 调用射击时间预测
+            self.predict_shooting_times()
 
             # 调试用的打印 (可选)
             # if len(target_coordinates) >= 2:
