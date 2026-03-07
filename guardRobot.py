@@ -395,6 +395,10 @@ class GuardRobot:
         # [新增] 总延迟时间 self.T (包含飞行时间+系统延迟)，默认 0.2s，可根据实际情况调整
         self.T = 0.2
 
+        # [新增] 平移速度预测相关
+        self.velocity = np.array([0.0, 0.0, 0.0]) # 线速度向量
+        self.center_history = deque(maxlen=5)     # 中心点历史记录 (pos, time)用于差分计算速度
+
     def cal_armor(self):
         """检查是否有有效的装甲板数据"""
         return len(self.armor_plates_camera_positions) > 0 and len(self.armor_plates_camera_positions[0]) >= 4
@@ -461,6 +465,71 @@ class GuardRobot:
 
         return filtered_armors
 
+    def update_velocity(self):
+        """
+        [新增] 更新机器人底盘线速度
+        使用最近的历史中心点进行差分计算
+        """
+        if self.center is None: return
+
+        current_time = self.last_timestamp
+        self.center_history.append((self.center, current_time))
+
+        if len(self.center_history) >= 2:
+            # 取最新和最旧的数据计算平均速度 (简单低通)
+            p_new, t_new = self.center_history[-1]
+            p_old, t_old = self.center_history[0] # 使用队列头部数据，跨度更大，速度更平滑
+
+            time_span = t_new - t_old
+            if time_span > 0.001:
+                raw_v = (p_new - p_old) / time_span
+
+                # 简单的低通滤波
+                alpha_v = 0.8
+                self.velocity = self.velocity * (1 - alpha_v) + raw_v * alpha_v
+            else:
+                self.velocity = np.array([0.0, 0.0, 0.0])
+
+    def get_predicted_target_position(self, future_time_delta: float):
+        """
+        [新增] 获取未来时刻的预测打击坐标 (考虑平移 + 自旋)
+        future_time_delta: 距离当前时刻的时间增量 (秒)
+        """
+        if self.center is None: return None
+
+        mgr = TestRobotCenter.spin_manager
+
+        # 1. 预测平移后的中心位置
+        # P_pred = P_now + V * t
+        pred_center = self.center + self.velocity * future_time_delta
+
+        # 2. 预测自旋后的装甲板位置
+        # 计算未来时刻的绝对 Yaw 角
+        # 注意: accumulated_angle 是积分值，last_armor_yaw 是当前值
+        # 我们使用 last_armor_yaw 作为基准推算
+        total_yaw_pred = mgr.last_armor_yaw + mgr.omega * future_time_delta
+
+        # 获取当前状态对应的物理半径 (假设短时间内状态不切换，或忽略切换带来的微小半径变化)
+        # 这里传入 last_armor_yaw 主要是为了满足接口，实际上我们只关心状态对应的半径
+        # 注意: dt 传 0 因为只是获取参数
+        r, y_offset = mgr.predict_single_plate(mgr.last_armor_yaw, 1/30)
+
+        # 3. 合成 3D 坐标
+        # 假设装甲板在 XZ 平面上绕中心旋转
+        # 坐标系: X右, Y下(高度), Z前
+        # 旋转模型:
+        #   x_offset = -r * sin(yaw)
+        #   z_offset = -r * cos(yaw)
+        #   (这个公式取决于之前的坐标系定义和法向量方向，这里沿用 get_predict_target 的推导)
+
+        target_3d = np.array([
+            pred_center[0] - r * math.sin(total_yaw_pred),
+            pred_center[1] + y_offset, # 高度即使平移也加上 offset
+            pred_center[2] - r * math.cos(total_yaw_pred)
+        ])
+
+        return target_3d
+
     def find_robot_center(self, dt):
         """
         计算机器人中心
@@ -494,6 +563,9 @@ class GuardRobot:
                 self.z_filter_val = self.z_filter_val * (1 - self.Z_ALPHA) + raw_center[2] * self.Z_ALPHA
                 raw_center[2] = self.z_filter_val
             self.center = raw_center
+
+            # [新增] 更新速度估计
+            self.update_velocity()
         else:
             self.center = None
 
@@ -578,6 +650,7 @@ class GuardRobot:
 
         # 2. 生成 10 个预测点 (90度, 180度 ... 900度)
         print(f"[Prediction] Base Time: {current_time - self.program_start_time:.4f}s | Omega: {omega:.3f} rad/s")
+        print(f"             Velocity: ({self.velocity[0]:.2f}, {self.velocity[1]:.2f}, {self.velocity[2]:.2f}) m/s")
 
         for k in range(1, 11):
             # 需要转过的角度 (弧度)
@@ -598,7 +671,14 @@ class GuardRobot:
             if shoot_time_abs > current_time:
                 rel_shoot_time = shoot_time_abs - self.program_start_time
                 predicted_times.append(rel_shoot_time)
-                print(f"  -> Shot {k} (+{int(k*90)}deg): {rel_shoot_time:.4f}s")
+
+                # [新增] 计算该时刻的预测打击位置
+                # 注意：我们需要预测的是 target_arrival_time 时刻的位置
+                # time_delta = target_arrival_time - current_time = time_to_rotate
+                pred_pos = self.get_predicted_target_position(time_to_rotate)
+
+                pos_str = f"({pred_pos[0]:.2f}, {pred_pos[1]:.2f}, {pred_pos[2]:.2f})" if pred_pos is not None else "N/A"
+                print(f"  -> Shot {k} (+{int(k*90)}deg): {rel_shoot_time:.4f}s | Pos: {pos_str}")
 
         return predicted_times
 
