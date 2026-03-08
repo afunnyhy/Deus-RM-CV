@@ -67,7 +67,7 @@ t0 = {
 
 # 对局需要手动设置的重要参数------------------------------------------------------------------------------------------
 # 我方颜色,后根据通信自动设置
-friend_color = Color.BLUE
+friend_color = Color.RED
 # 我方兵种 (哨兵SENTINEL 英雄HERO 步兵INFANTRY)
 my_TroopType = TroopType.INFANTRY
 
