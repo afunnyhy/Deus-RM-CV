@@ -399,6 +399,9 @@ class GuardRobot:
         self.velocity = np.array([0.0, 0.0, 0.0]) # 线速度向量
         self.center_history = deque(maxlen=5)     # 中心点历史记录 (pos, time)用于差分计算速度
 
+        # [新增] 预测打击点列表 (用于绘图)
+        self.predicted_shoot_points = []
+
     def cal_armor(self):
         """检查是否有有效的装甲板数据"""
         return len(self.armor_plates_camera_positions) > 0 and len(self.armor_plates_camera_positions[0]) >= 4
@@ -633,6 +636,7 @@ class GuardRobot:
         5. 生成未来 10 个预测点。
         """
         predicted_times = []
+        self.predicted_shoot_points = [] # 清空上一帧预测点
 
         # 1. 触发条件：只出现一块装甲板
         if len(self.armor_plates_camera_positions) != 1:
@@ -665,17 +669,16 @@ class GuardRobot:
             # 击打时刻 (提前量)
             shoot_time_abs = target_arrival_time - self.T
 
-            # 过滤掉已经过去的时间点 (或者保留看用户需求? 通常只关注未来的)
-            # 这里我们输出所有计算结果，但在现在的应用中，小于 current_time 的大概率已经来不及了
-
+            # 过滤
             if shoot_time_abs > current_time:
                 rel_shoot_time = shoot_time_abs - self.program_start_time
                 predicted_times.append(rel_shoot_time)
 
-                # [新增] 计算该时刻的预测打击位置
-                # 注意：我们需要预测的是 target_arrival_time 时刻的位置
-                # time_delta = target_arrival_time - current_time = time_to_rotate
+                # [新增] 计算该时刻的预测打击位置并将结果存入列表
                 pred_pos = self.get_predicted_target_position(time_to_rotate)
+
+                if pred_pos is not None:
+                     self.predicted_shoot_points.append(pred_pos)
 
                 pos_str = f"({pred_pos[0]:.2f}, {pred_pos[1]:.2f}, {pred_pos[2]:.2f})" if pred_pos is not None else "N/A"
                 print(f"  -> Shot {k} (+{int(k*90)}deg): {rel_shoot_time:.4f}s | Pos: {pos_str}")

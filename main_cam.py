@@ -496,6 +496,19 @@ def run():
                                     cv2.fillPoly(overlay, [pts], (255, 255, 0))
                                     cv2.addWeighted(overlay, 0.2, out_img, 0.8, 0, out_img)
 
+                    # ==================== [新增] 绘制预测的所有射击点 (Future Shots) ====================
+                    if hasattr(robot, 'predicted_shoot_points') and robot.predicted_shoot_points:
+                        for idx, p_shoot in enumerate(robot.predicted_shoot_points):
+                            p_shoot_arr = np.array(p_shoot, dtype=np.float32)
+                            p_shoot_pixel = camera2xy(p_shoot_arr)
+
+                            if (0 <= p_shoot_pixel[0] < img_width and 0 <= p_shoot_pixel[1] < img_height):
+                                # 绘制红色十字准星
+                                px, py = int(p_shoot_pixel[0]), int(p_shoot_pixel[1])
+                                cv2.drawMarker(out_img, (px, py), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
+                                cv2.putText(out_img, f"Shot {idx+1}", (px + 10, py), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                            (0, 0, 255), 1)
+
                     # ==================== 6. 显示状态信息 ====================
                     detected_count = len(robot.armor_plates_camera_positions)
 
@@ -513,13 +526,22 @@ def run():
                     status_y = 30
                     # 1. 显示机器人中心坐标
                     cv2.putText(out_img,
-                                f"Robot Center: X={robot.center[0]:.2f}m, Z={robot.center[2]:.2f}m",
-                                (10, status_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                f"Robot pos: X={robot.center[0]:.2f}, Z={robot.center[2]:.2f}",
+                                (10, status_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+                    # [新增] 显示速度和角速度
+                    mgr = getattr(robot.test_robot_center, 'spin_manager', None)
+                    omega_val = mgr.omega if mgr else 0.0
+                    vel_str = f"Vel: ({robot.velocity[0]:.1f}, {robot.velocity[2]:.1f}) m/s"
+                    omega_str = f"Omega: {omega_val:.2f} rad/s"
+
+                    cv2.putText(out_img, vel_str, (10, status_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+                    cv2.putText(out_img, omega_str, (10, status_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
                     # 2. 显示装甲板数量
                     cv2.putText(out_img,
-                                f"Armors: Detected={detected_count}, Predicted={predicted_count}",
-                                (10, status_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                                f"Armors: Detected={detected_count}, Pred={predicted_count}",
+                                (10, status_y + 75), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
                     # 3. [新增] 显示双板夹角 (当检测到 >= 2 个装甲板时)
                     next_y = status_y + 60
