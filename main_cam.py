@@ -1,7 +1,7 @@
 import argparse
 import os
 import sys
-import onnxruntime as ort
+# import onnxruntime as ort
 import cv2
 import torch
 import numpy as np
@@ -100,78 +100,49 @@ def write1(x, y, z):
 
 
 def run():
-    """相机在线推理主流程：与 main_video 统一思路，但输入来自实时相机。"""
+    """相机在线推理主流程：移植 main_video 逻辑，包含绘图与控制台输出。"""
     # 1) 初始化相机
     print("Camera type:", cameraType, "    ID:", cameraID)
     camera = InitCamera(cameraType)
     print(cameraID, "init success.")
 
-    # 2) 初始化检测器（与 main_video 统一：优先 YOLO）
+    # 2) 初始化检测器
     if used_yolo:
         print("model:", model_path + model_name, "   use_cuda:", CUDA)
         armor_de = ArmorDetector(model_path, model_name, CUDA, friend_color)
         print("armor detector init success.")
         print("Troop type:", my_TroopType, "   Friend color:", friend_color)
-        print("Is show video:", is_show_video, "   Save video times:", save_video_time)
     else:
         armor_de = armor_getter(friend_color)
 
     light_pos = LightDetector()
     pnp_solver = PnPSolver()
 
-    motion_detector = MotionStateDetector()  # 创建运动状态检测器实例
-    rotation_estimator = RotationVelocityEstimator()  # 创建旋转角速度估计器实例
-    
-    # ========== 多装甲板 3D KalmanFilter 管理 ==========
-    # key: armor_id  ->  value: {"kfs": [KF*4], "inited": [bool*4], "miss_cnt": int, "center_x": float,
-    #                             "color": Color, "troop_type": TroopType,
-    #                             "smooth_pixels": list[tuple[int,int]] | None}
-    armor_kf_dict = {}
-    corner_kf_init_cov = 1e3
-    # 测量噪声稍大一些，让KF对单帧抖动更不敏感
-    corner_kf_measure_noise = 0.15
-    corner_kf_process_noise = 0.2
-    # 连续丢失多少帧才真正认为装甲板消失
-    max_miss_frames = 8
-    # 像素坐标的一阶低通滤波系数（0~1，越小越平滑）
-    pixel_smooth_alpha = 0.4
-    
-    robot_id = 1  # 假设我们跟踪的机器人ID为1
+    # 初始化 GuardRobot
+    robot = GuardRobot()
 
-    # 录制视频（在线情况下可选）
-    if save_video_time > 0:
-        output_file = time.strftime("%Y%m%d_%H%M%S") + "_output.mp4"
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        fps = 30
-        ret, orig_frame = camera.get_photo()
-        if not ret:
-            print("Error: camera get first frame failed")
-            return
-        frame_size = (orig_frame.shape[1], orig_frame.shape[0])
-        video_writer = cv2.VideoWriter(output_file, fourcc, fps, frame_size)
-    else:
-        video_writer = None
-
-    last_time = time.time()
-    start_time = time.time()
-    
-    frame_count = 0  # 帧计数器
+    # 视频录制变量初始化
+    video_writer = None
 
     print("Start working...")
+
+    cnt = 0
+    time1 = time.time()
+
     while True:
         # 读取一帧
         ret, orig_frame = camera.get_photo()
         if not ret:
+            # print("Detected not ret, continue")
             continue
         if camera_flip:
             orig_frame = cv2.flip(orig_frame, -1)
 
         out_img = orig_frame.copy()
+        img_height, img_width = out_img.shape[:2]
 
-        # dt 供 KF 使用（与 main_video 一致裁剪）
-        now = time.time()
-        dt = float(np.clip(now - last_time, 1e-6, 0.2))
-        last_time = now
+        # 清空当前帧装甲板数据
+        robot.armor_plates_camera_positions.clear()
 
         # 1) 检测
         if used_yolo:
@@ -179,384 +150,441 @@ def run():
         else:
             ret_cv, all_detect_armor, out_img = armor_de.get_armors_by_img(orig_frame)
             
-        # 记录装甲板法向量用于角速度计算
-        visible_armor_ids = []  # 当前可见的装甲板ID列表
-        for i, detected_armor_box in enumerate(all_detect_armor):
-            if used_yolo:
-                ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box, out_img)
-            else:
-                ret_detected = True
-                detected_armor = detected_armor_box
-            if not ret_detected:
-                continue
-
-            # 中心点 PnP，使用云台当前姿态 vision.pitch/vision.yaw
-            ret_pnp, armor_candidate, out_img = pnp_solver.get_armor_target(
-                detected_armor, out_img, vision.pitch, vision.yaw
-            )
-            if not ret_pnp or armor_candidate is None:
-                continue
-
-            # 角点 PnP：获得 4 角点在相机坐标系下的 3D
-            ret_pnp2, rvec, tvec, obj_pts_cam = pnp_solver.solve_pnp(detected_armor)
-            if not ret_pnp2 or obj_pts_cam is None:
-                continue
-                
-            # 计算法向量并更新到旋转估计器
-            armor_id = i  # 使用索引作为装甲板ID
-            visible_armor_ids.append(armor_id)
-            
-            # 从3D点计算法向量
-            if len(obj_pts_cam) >= 3:
-                p1 = np.array(obj_pts_cam[0])
-                p2 = np.array(obj_pts_cam[1])
-                p3 = np.array(obj_pts_cam[2])
-                
-                # 计算两个边向量
-                v1 = p2 - p1
-                v2 = p3 - p1
-                
-                # 计算法向量
-                normal_vector = np.cross(v1, v2)
-                if np.linalg.norm(normal_vector) > 1e-6:
-                    rotation_estimator.update_armor_normal(armor_id, now, normal_vector)
-
-        # 更新运动状态检测器
-        armor_count = len(all_detect_armor)
-        motion_detector.update(robot_id, armor_count, now)
-        # 不再区分运动状态，总是使用平移状态
-        motion_state = MotionStateDetector.TRANSLATION
-        
-        # 总是计算角速度
-        angular_velocity_info = None
-        if visible_armor_ids:
-            angular_velocity_info = rotation_estimator.estimate_robot_angular_velocity(visible_armor_ids)
-
-        # 在图像上显示运动状态
-        cv2.putText(out_img, f"Motion State: {motion_state}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(out_img, f"Armor Count: {armor_count}", (10, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                    
-        # 如果有角速度信息，显示在图像上
-        if angular_velocity_info is not None:
-            angular_velocity, rotation_axis = angular_velocity_info
-            cv2.putText(out_img, f"Angular Velocity: {angular_velocity:.2f} rad/s", (10, 110),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            cv2.putText(out_img, f"Rotation Axis: [{rotation_axis[0]:.2f}, {rotation_axis[1]:.2f}, {rotation_axis[2]:.2f}]", (10, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-        # 记录本帧检测到的装甲板中心x，后面用于和已有KF做简单位置匹配
-        h, w = out_img.shape[:2]
-
-        def get_center_x(armor_box):
-            # armor_box.camera_pos 是 xyxy 或四点，当前这里按xyxy处理
-            pts = np.array(armor_box.camera_pos).reshape(-1, 2)
-            return float(np.mean(pts[:, 0]))
-
-        # 本帧中已成功完成 PnP 的装甲板（用于 GuardRobot 计算小车中心）
-        guardrobot_candidates = []  # 存储 (detected_armor, area)
-
-        # 2) 对每个检测到的装甲板：灯条提点 + PnP
         for detected_armor_box in all_detect_armor:
             if used_yolo:
                 ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box, out_img)
             else:
                 ret_detected = True
                 detected_armor = detected_armor_box
-            if not ret_detected:
-                continue
 
-            # 中心点 PnP，使用云台当前姿态 vision.pitch/vision.yaw
-            ret_pnp, armor_candidate, out_img = pnp_solver.get_armor_target(
-                detected_armor, out_img, vision.pitch, vision.yaw
-            )
-            if not ret_pnp or armor_candidate is None:
-                continue
+            if ret_detected:
+                # 注意：main_cam 使用实时云台角度 vision.pitch, vision.yaw
+                try:
+                    current_pitch = vision.pitch
+                    current_yaw = vision.yaw
+                except:
+                    current_pitch = 0
+                    current_yaw = 0
 
-            # 拿 4 个角点 3D（相机坐标系），并将其写回 ArmorPlate，供 GuardRobot 使用
-            ret_pnp2, rvec2, tvec2, obj_pts_cam = pnp_solver.solve_pnp(detected_armor)
-            if not ret_pnp2 or obj_pts_cam is None:
-                continue
+                ret_pnp, armor, out_img, object_points_cam = pnp_solver.get_armor_target(
+                    detected_armor, out_img, current_pitch, current_yaw
+                )
 
-            # 记录这块装甲板可以作为 GuardRobot 候选（直接用3D四角点）
-            detected_armor.camera_pos = np.asarray(obj_pts_cam, dtype=np.float32)
-            armor_area = getattr(detected_armor_box, "area", 0.0)
-            guardrobot_candidates.append((detected_armor, armor_area))
+                if ret_pnp:
+                    # 检查角点数据是否完整
+                    if object_points_cam is not None and len(object_points_cam) >= 4:
+                        valid_armor = True
+                        for corner in object_points_cam:
+                            if len(corner) < 3:
+                                valid_armor = False
+                                break
 
-            # 如果处于平移状态，启用卡尔曼滤波器
-            # if motion_state == MotionStateDetector.TRANSLATION:
-            # 为每个装甲板创建唯一ID（基于装甲板中心位置）
-            armor_center_x = get_center_x(detected_armor_box)
-            
-            # 简单的装甲板匹配逻辑（基于中心x坐标）
-            matched_armor_id = None
-            for armor_id, state in armor_kf_dict.items():
-                if abs(state["center_x"] - armor_center_x) < 50:  # 阈值可根据需要调整
-                    matched_armor_id = armor_id
-                    break
-            
-            # 如果没有匹配的装甲板，则创建新的ID
-            if matched_armor_id is None:
-                matched_armor_id = len(armor_kf_dict)
-                armor_kf_dict[matched_armor_id] = {
-                    "kfs": [None] * 4,
-                    "inited": [False] * 4,
-                    "miss_cnt": 0,
-                    "center_x": armor_center_x,
-                    "color": friend_color,
-                    "troop_type": my_TroopType,
-                    "smooth_pixels": None
-                }
-            
-            # 更新装甲板状态
-            armor_kf_dict[matched_armor_id]["miss_cnt"] = 0
-            armor_kf_dict[matched_armor_id]["center_x"] = armor_center_x
-            
-            # 为4个角点应用卡尔曼滤波
-            kfs = armor_kf_dict[matched_armor_id]["kfs"]
-            inited = armor_kf_dict[matched_armor_id]["inited"]
-            
-            filtered_pixels = []
-            for idx, p in enumerate(obj_pts_cam):
-                px, py, pz = map(float, p)
-                
-                if not inited[idx]:
-                    kf_point = KF(
-                        init_cov=corner_kf_init_cov,
-                        measure_noise=corner_kf_measure_noise,
-                        process_noise=corner_kf_process_noise,
-                        x=px, y=py, z=pz,
-                        vx=0.0, vy=0.0, vz=0.0,
-                    )
-                    kf_point.init_kf(dt=dt)
-                    kfs[idx] = kf_point
-                    inited[idx] = True
-                
-                kf_point = kfs[idx]
-                kf_point.predict_next(dt)
-                kf_point.correct_by_sensor([px, py, pz])
-                
-                state_post, _P = kf_point.get_state()
-                pos_post = state_post[:3].reshape(-1)
-                
-                u_f, v_f = camera2xy(pos_post)
-                u_f = int(max(0, min(w - 1, u_f)))
-                v_f = int(max(0, min(h - 1, v_f)))
-                filtered_pixels.append((u_f, v_f))
-            
-            # 使用滤波后的角点绘制装甲板
-            if len(filtered_pixels) == 4:
-                tl_f, bl_f, tr_f, br_f = filtered_pixels
-                filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)  # 修正点顺序
-                cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
-            # else:
-                # 非平移状态直接使用PnP结果绘制
-                # raw_pixels = []
-                # for p in obj_pts_cam:
-                #     u, v = camera2xy(p)
-                #     u = int(max(0, min(w - 1, u)))
-                #     v = int(max(0, min(h - 1, v)))
-                #     raw_pixels.append((u, v))
-                # if len(raw_pixels) != 4:
-                #     continue
-                # tl_f, bl_f, tr_f, br_f = raw_pixels
-                # filt_rect = np.array([tl_f, bl_f, br_f, tr_f], dtype=np.int32).reshape(-1, 1, 2)  # 修正点顺序
-                # cv2.polylines(out_img, [filt_rect], isClosed=True, color=(0, 255, 0), thickness=2)
+                        if valid_armor:
+                            robot.armor_plates_camera_positions.append(object_points_cam)
 
-        # ====== 装甲板消失：连续丢失若干帧后删除其对应的运动模型（KF） ======
-        for armor_id, state in list(armor_kf_dict.items()):
-            # 如果这一帧没有被匹配更新，则视为丢失一帧
-            if state.get("miss_cnt", 0) is not None:
-                state["miss_cnt"] = state.get("miss_cnt", 0) + 1
-            
-            if state["miss_cnt"] > max_miss_frames:
-                del armor_kf_dict[armor_id]
-
-        # ====== 如果本帧至少有两块通过KF链路且有3D角点的装甲板，则用法向量直线最近点中点作为小车中心 ======
-        if len(guardrobot_candidates) >= 2:
+        # 只有在有装甲板数据时才进行预测
+        if len(robot.armor_plates_camera_positions) > 0:
+            detected_num = len(robot.armor_plates_camera_positions)
             try:
-                # 按面积从大到小排序，取前两块
-                guardrobot_candidates.sort(key=lambda x: x[1], reverse=True)
-                top_two_armors = [guardrobot_candidates[0][0], guardrobot_candidates[1][0]]
+                robot.use_robot_prediction()
 
-                # 计算两块装甲板各自的3D中心（相机坐标系），仅用于调试输出
-                armor_centers = []
-                for armor in top_two_armors:
-                    pts = np.asarray(armor.camera_pos, dtype=float).reshape(-1, 3)
-                    center_i = pts.mean(axis=0)
-                    armor_centers.append(center_i)
-                c1, c2 = armor_centers
+                # 获取并打印信息
+                if robot.center is not None:
+                    # ==================== 1. 绘制机器人中心点 ====================
+                    robot_center_pixel = camera2xy(robot.center)
+                    # (traj_img drawing removed as it's not applicable here easily)
 
-                print(
-                    f"[Center-Normal] using two armors: areas=({guardrobot_candidates[0][1]:.3f}, {guardrobot_candidates[1][1]:.3f}), "
-                    f"centers=({c1[0]:.3f},{c1[1]:.3f},{c1[2]:.3f}) & ({c2[0]:.3f},{c2[1]:.3f},{c2[2]:.3f})"
-                )
+                    if (0 <= robot_center_pixel[0] < img_width and
+                            0 <= robot_center_pixel[1] < img_height):
+                        # 绘制机器人中心点（红色大圆点）
+                        cv2.circle(out_img, (int(robot_center_pixel[0]), int(robot_center_pixel[1])),
+                                   12, (0, 0, 255), -1)
+                        cv2.circle(out_img, (int(robot_center_pixel[0]), int(robot_center_pixel[1])),
+                                   12, (255, 255, 255), 2)
 
-                # 使用 GuardRobot 计算两法向量在 xz 平面投影直线的交点作为二维小车中心
-                robot = GuardRobot(top_two_armors)
-                center_xz = robot.get_center_from_normals()  # 相机坐标系二维点 [x, z]
+                        # 添加机器人中心点信息文本
+                        cv2.putText(out_img, "ROBOT CENTER",
+                                    (int(robot_center_pixel[0]) + 15, int(robot_center_pixel[1]) - 15),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        cv2.putText(out_img, f"X:{robot.center[0]:.2f} Z:{robot.center[2]:.2f}",
+                                    (int(robot_center_pixel[0]) + 15, int(robot_center_pixel[1]) + 15),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-                # 为每块装甲板构造各自对应的 3D 中心点：[center_x, armor_y, center_z]
-                per_armor_centers = []
-                for armor_center in armor_centers:
-                    y_i = float(armor_center[1])
-                    center_i_3d = np.array([
-                        float(center_xz[0]),
-                        y_i,
-                        float(center_xz[1])
-                    ], dtype=float)
-                    per_armor_centers.append(center_i_3d)
+                    # ==================== 2. 绘制所有检测到的装甲板 ====================
+                    for i, armor_corners in enumerate(robot.armor_plates_camera_positions):
+                        # 限制绘制装甲板数量，但确保包含所有预测的装甲板
+                        if i >= len(robot.armor_plates_camera_positions):
+                            break
 
-                # 输出每块装甲板对应的车中心（两个中心都体现出来）
-                print("[Center-Normal] per-armor centers:")
-                for idx_c, c_cam in enumerate(per_armor_centers):
-                    print(
-                        f"  armor #{idx_c} center_cam=({c_cam[0]:.3f}, {c_cam[1]:.3f}, {c_cam[2]:.3f})"
-                    )
+                        if armor_corners and len(armor_corners) >= 4:
+                            # 绘制装甲板的四个角点
+                            armor_points_pixel = []
+                            for corner in armor_corners:
+                                corner_pixel = camera2xy(corner)
+                                armor_points_pixel.append(corner_pixel)
 
-                # 使用面积更大的第一块装甲板对应的中心点作为整体车中心的原始值，用于时间平滑
-                center_cam_raw = per_armor_centers[0]
+                            # 区分检测到的装甲板和预测的装甲板
+                            if i < len(robot.armor_plates_camera_positions) - (len(robot.armor_plates_camera_positions) - len(robot.armor_plates_camera_positions)):
+                                # 检测到的装甲板（蓝色实线）
+                                color = (255, 0, 0)
+                                line_type = cv2.LINE_AA
+                                line_thickness = 3
+                                label_prefix = "Detected"
+                            else:
+                                # 预测的装甲板（绿色虚线）
+                                color = (0, 255, 0)
+                                line_type = cv2.LINE_AA
+                                line_thickness = 2
+                                label_prefix = "Predicted"
 
-                # 基于当前两块推算对面两块装甲，并追加到 robot.armor_plate
-                robot.calculate_another_armor_by_center()
+                            # 绘制装甲板边框
+                            for j in range(4):
+                                pt1 = armor_points_pixel[j]
+                                pt2 = armor_points_pixel[(j + 1) % 4]
+                                cv2.line(out_img,
+                                         (int(pt1[0]), int(pt1[1])),
+                                         (int(pt2[0]), int(pt2[1])),
+                                         color, line_thickness, line_type)
 
-                # 运行时调试：在 main_video 中打印由 GuardRobot 预测得到的对面装甲板的四个点坐标和面积
-                inferred_armors = []
-                if len(robot.armor_plate) >= 4:
-                    inferred_armors = robot.armor_plate[2:4]
-                    for idx_inf, inf_armor in enumerate(inferred_armors):
-                        try:
-                            area_inf = float(getattr(inf_armor, "area", 0.0))
-                            print(f"[PredArmor-main] new armor #{idx_inf}: area={area_inf:.3f}")
-                        except Exception:
-                            print(f"[PredArmor-main] new armor #{idx_inf}: area=<unknown>")
-                        pts3d_inf = np.asarray(inf_armor.camera_pos, dtype=float).reshape(-1, 3)
-                        # 打印四个3D角点
-                        for j, pt in enumerate(pts3d_inf):
-                            x, y, z = pt
-                            print(f"[PredArmor-main] new armor #{idx_inf} pt{j}: ({x:.3f}, {y:.3f}, {z:.3f})")
-                        # 额外打印对面装甲板的3D中心点
-                        center_inf = pts3d_inf.mean(axis=0)
-                        print(
-                            f"[PredArmor-main] new armor #{idx_inf} center: ("
-                            f"{center_inf[0]:.3f}, {center_inf[1]:.3f}, {center_inf[2]:.3f})"
-                        )
+                            # 计算装甲板中心点并绘制
+                            center_3d = np.mean(armor_corners, axis=0)
+                            center_pixel = camera2xy(center_3d)
+                            cv2.circle(out_img, (int(center_pixel[0]), int(center_pixel[1])),
+                                       8, color, -1)
+                            cv2.putText(out_img, f"{label_prefix} Armor {i + 1}",
+                                        (int(center_pixel[0]) + 10, int(center_pixel[1]) - 10),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-                print(
-                    f"[Center-Normal] center_cam_raw=({center_cam_raw[0]:.3f}, {center_cam_raw[1]:.3f}, {center_cam_raw[2]:.3f})"
-                )
+                    # ==================== 3. 绘制装甲板中心点和连线 ====================
+                    if hasattr(robot, 'armor_center_point') and robot.armor_center_point:
+                        # 直接使用armor_center_point，不需要处理嵌套结构
+                        armor_centers = robot.armor_center_point
 
-                # 3D 中心点平滑：一阶低通滤波，仅对整体车中心进行
-                if center_cam_prev is None:
-                    center_cam_smooth = center_cam_raw
-                else:
-                    center_cam_smooth = (
-                        center_smooth_alpha * center_cam_raw +
-                        (1.0 - center_smooth_alpha) * center_cam_prev
-                    )
-                center_cam_prev = center_cam_smooth
+                        # 绘制每个装甲板中心点
+                        for i, center_3d in enumerate(armor_centers):
+                            if isinstance(center_3d, (list, np.ndarray)) and len(center_3d) >= 3:
+                                center_3d = np.array(center_3d, dtype=np.float32)
 
-                # 简单保护：如果z<=0，说明中心点在相机后方或数值异常，本帧不画中心
-                if center_cam_smooth[2] <= 0:
-                    print("[Center-Normal] z<=0, skip drawing this frame, center_cam=", center_cam_smooth)
-                else:
-                    # 将两个 3D 中心点和整体平滑中心投影到像素平面，并在图像上分别绘制
-                    centers_to_draw = list(per_armor_centers)
-                    centers_to_draw.append(center_cam_smooth)
+                                # 将装甲板中心点转换为像素坐标
+                                center_pixel = camera2xy(center_3d)
 
-                    for idx_draw, c_cam_draw in enumerate(centers_to_draw):
-                        u_c, v_c = camera2xy(c_cam_draw)
-                        u_c = int(max(0, min(w - 1, u_c)))
-                        v_c = int(max(0, min(h - 1, v_c)))
+                                # 检查点是否在图像范围内
+                                if (0 <= center_pixel[0] < img_width and
+                                        0 <= center_pixel[1] < img_height):
 
-                        if idx_draw < 2:
-                            # 两块装甲板各自对应的中心：使用黄色小十字
-                            color_outer = (0, 0, 0)
-                            color_inner = (255, 255, 0)
-                            radius_outer = 14
-                            radius_inner = 10
-                            line_len = 16
-                            label = f"CENTER#{idx_draw}"
+                                    # 区分检测到的装甲板中心点和预测的装甲板中心点
+                                    if i < len(robot.armor_plates_camera_positions):
+                                        # 检测到的装甲板中心点（蓝色）
+                                        color = (255, 0, 0)
+                                        label = f"Detected Center {i + 1}"
+                                    else:
+                                        # 预测的装甲板中心点（绿色）
+                                        color = (0, 255, 0)
+                                        label = f"Predicted Center {i + 1}"
+
+                                    # 绘制装甲板中心点
+                                    cv2.circle(out_img,
+                                               (int(center_pixel[0]), int(center_pixel[1])),
+                                               10, color, -1)
+                                    cv2.circle(out_img,
+                                               (int(center_pixel[0]), int(center_pixel[1])),
+                                               10, (255, 255, 255), 1)
+
+                                    # 添加文本标签
+                                    cv2.putText(out_img, label,
+                                                (int(center_pixel[0]) + 15,
+                                                 int(center_pixel[1]) - 15),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                                    # 绘制从机器人中心到装甲板中心的连线
+                                    if (0 <= robot_center_pixel[0] < img_width and
+                                            0 <= robot_center_pixel[1] < img_height):
+                                        # 使用不同颜色区分检测和预测的装甲板连线
+                                        line_color = (0, 255, 255) if i >= len(robot.armor_plates_camera_positions) else (255, 255, 0)
+                                        cv2.line(out_img,
+                                                 (int(robot_center_pixel[0]), int(robot_center_pixel[1])),
+                                                 (int(center_pixel[0]), int(center_pixel[1])),
+                                                 line_color, 2, cv2.LINE_AA)
+                                else:
+                                    # 如果装甲板中心点不在图像内，在图像边缘绘制一个指示箭头
+                                    # 计算方向向量
+                                    dir_x = center_pixel[0] - img_width / 2
+                                    dir_y = center_pixel[1] - img_height / 2
+
+                                    # 归一化
+                                    norm = np.sqrt(dir_x ** 2 + dir_y ** 2)
+                                    if norm > 0:
+                                        dir_x /= norm
+                                        dir_y /= norm
+
+                                    # 在图像边缘绘制箭头
+                                    if center_pixel[0] < 0:
+                                        edge_x = 10
+                                        edge_y = int(img_height / 2 + dir_y * img_height / 3)
+                                    elif center_pixel[0] >= img_width:
+                                        edge_x = img_width - 10
+                                        edge_y = int(img_height / 2 + dir_y * img_height / 3)
+                                    elif center_pixel[1] < 0:
+                                        edge_x = int(img_width / 2 + dir_x * img_width / 3)
+                                        edge_y = 10
+                                    else:  # center_pixel[1] >= img_height
+                                        edge_x = int(img_width / 2 + dir_x * img_width / 3)
+                                        edge_y = img_height - 10
+
+                                    # 绘制指示箭头
+                                    arrow_color = (0, 255, 0) if i >= len(robot.armor_plates_camera_positions) else (255, 0, 0)
+                                    arrow_label = "Detected" if i < len(robot.armor_plates_camera_positions) else "Predicted"
+                                    cv2.arrowedLine(out_img,
+                                                    (edge_x - int(30 * dir_x), edge_y - int(30 * dir_y)),
+                                                    (edge_x, edge_y),
+                                                    arrow_color, 2, tipLength=0.3)
+                                    cv2.putText(out_img, f"{arrow_label} {i + 1}",
+                                                (edge_x + 10, edge_y),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, arrow_color, 2)
+
+                    # ==================== 4. 绘制所有预测的装甲板中心点和边框 (Predicted) ====================
+                    if hasattr(robot, 'armor_center_point') and robot.armor_center_point:
+                        # 确保armor_center_point是列表的列表格式
+                        if isinstance(robot.armor_center_point[0], list):
+                            armor_centers = robot.armor_center_point[0]
                         else:
-                            # 平滑后的整体车中心：使用青色大十字
-                            color_outer = (0, 0, 0)
-                            color_inner = (0, 255, 255)
-                            radius_outer = 18
-                            radius_inner = 16
-                            line_len = 20
-                            label = "CENTER"
+                            armor_centers = robot.armor_center_point
 
-                        # 绘制外层十字
-                        cv2.circle(out_img, (u_c, v_c), radius_outer, color_outer, 2)
-                        cv2.line(out_img, (u_c - line_len, v_c), (u_c + line_len, v_c), color_outer, 2)
-                        cv2.line(out_img, (u_c, v_c - line_len), (u_c, v_c + line_len), color_outer, 2)
+                        # 绘制每个预测的装甲板
+                        for i, center_3d in enumerate(armor_centers):
+                            if isinstance(center_3d, (list, np.ndarray)) and len(center_3d) >= 3:
+                                center_3d = np.array(center_3d, dtype=np.float32)
 
-                        # 绘制内层十字
-                        cv2.circle(out_img, (u_c, v_c), radius_inner, color_inner, 2)
-                        cv2.line(out_img, (u_c - line_len, v_c), (u_c + line_len, v_c), color_inner, 2)
-                        cv2.line(out_img, (u_c, v_c - line_len), (u_c, v_c + line_len), color_inner, 2)
+                                # 将预测的装甲板中心点转换为像素坐标
+                                predicted_center_pixel = camera2xy(center_3d)
 
-                        # 绘制标签
-                        cv2.putText(out_img, label, (u_c + 10, v_c + 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_inner, 1)
+                                # 检查点是否在图像范围内
+                                if (0 <= predicted_center_pixel[0] < img_width and
+                                        0 <= predicted_center_pixel[1] < img_height):
 
-                # ====== 画出由 GuardRobot 推算得到的对面装甲板（两块） ======
-                # 这里使用上面已经获取的 inferred_armors，确保只画一次
-                if inferred_armors:
-                    for idx_inf, inf_armor in enumerate(inferred_armors):
-                        pts3d = np.asarray(inf_armor.camera_pos, dtype=float).reshape(-1, 3)
-                        if pts3d.shape[0] != 4:
-                            continue
+                                    # 绘制预测的装甲板中心点（绿色大圆点）
+                                    cv2.circle(out_img,
+                                               (int(predicted_center_pixel[0]), int(predicted_center_pixel[1])),
+                                               10, (0, 255, 0), -1)
+                                    cv2.circle(out_img,
+                                               (int(predicted_center_pixel[0]), int(predicted_center_pixel[1])),
+                                               10, (255, 255, 255), 1)
 
-                        pts2d = [camera2xy(p) for p in pts3d]
-                        pts2d = [
-                            (int(max(0, min(w - 1, u))), int(max(0, min(h - 1, v))))
-                            for (u, v) in pts2d
-                        ]
+                                    # 添加文本标签
+                                    label = f"Pred Armor {i + 1}"
+                                    cv2.putText(out_img, label,
+                                                (int(predicted_center_pixel[0]) + 15,
+                                                 int(predicted_center_pixel[1]) - 15),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-                        tl_i, bl_i, tr_i, br_i = pts2d
+                                    # 绘制从机器人中心到装甲板中心的连线（黄色虚线）
+                                    if (0 <= robot_center_pixel[0] < img_width and
+                                            0 <= robot_center_pixel[1] < img_height):
+                                        cv2.line(out_img,
+                                                 (int(robot_center_pixel[0]), int(robot_center_pixel[1])),
+                                                 (int(predicted_center_pixel[0]), int(predicted_center_pixel[1])),
+                                                 (0, 255, 255), 2, cv2.LINE_AA)
 
-                        # 用亮黄色画矩形表示对面装甲板，增加透明度和填充效果提升3D感
-                        # 创建装甲板区域的半透明填充效果
-                        overlay = out_img.copy()
-                        pts_array = np.array([tl_i, bl_i, br_i, tr_i], dtype=np.int32)  # 正确的点顺序
-                        cv2.fillPoly(overlay, [pts_array], color=(0, 128, 255))  # 半透明填充
-                        cv2.addWeighted(overlay, 0.3, out_img, 0.7, 0, out_img)  # 混合图像
-                        
-                        # 绘制装甲板边界，增强3D效果
-                        cv2.line(out_img, tl_i, bl_i, (0, 100, 255), 2)  # 左边缘
-                        cv2.line(out_img, bl_i, br_i, (0, 150, 255), 2)  # 下边缘
-                        cv2.line(out_img, br_i, tr_i, (0, 200, 255), 2)  # 右边缘
-                        cv2.line(out_img, tr_i, tl_i, (0, 255, 255), 2)  # 上边缘
-                        
-                        # 绘制对角线
-                        cv2.line(out_img, tl_i, br_i, (0, 255, 255), 1)  # 主对角线
-                        cv2.line(out_img, bl_i, tr_i, (0, 255, 255), 1)  # 副对角线
+                                    # 绘制预测装甲板的边框（绿色虚线）
+                                    # 假设装甲板尺寸为0.26m x 0.13m
+                                    armor_width = 0.26
+                                    armor_height = 0.13
 
-                        # 在中心处标注 OPP#idx
-                        center_inf = pts3d.mean(axis=0)
-                        u_o, v_o = camera2xy(center_inf)
-                        u_o = int(max(0, min(w - 1, u_o)))
-                        v_o = int(max(0, min(h - 1, v_o)))
-                        cv2.putText(out_img, f"OPP#{idx_inf}", (u_o + 5, v_o - 5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                                    # 获取装甲板方向（从机器人中心到装甲板中心的方向）
+                                    direction = center_3d - robot.center
+                                    direction_norm = np.linalg.norm(direction)
+                                    if direction_norm > 0:
+                                        direction = direction / direction_norm
+
+                                    # 计算装甲板的四个角点
+                                    # 垂直于方向向量的向量
+                                    perpendicular = np.array([-direction[2], 0, direction[0]])
+                                    perpendicular_norm = np.linalg.norm(perpendicular)
+                                    if perpendicular_norm > 0:
+                                        perpendicular = perpendicular / perpendicular_norm
+
+                                    # 计算四个角点的3D坐标
+                                    half_width = armor_width / 2
+                                    half_height = armor_height / 2
+
+                                    corner1 = center_3d + direction * half_height + perpendicular * half_width
+                                    corner2 = center_3d + direction * half_height - perpendicular * half_width
+                                    corner3 = center_3d - direction * half_height - perpendicular * half_width
+                                    corner4 = center_3d - direction * half_height + perpendicular * half_width
+
+                                    # 转换为像素坐标
+                                    corner1_pixel = camera2xy(corner1)
+                                    corner2_pixel = camera2xy(corner2)
+                                    corner3_pixel = camera2xy(corner3)
+                                    corner4_pixel = camera2xy(corner4)
+
+                                    # 绘制装甲板边框（绿色虚线）
+                                    corners_pixel = [corner1_pixel, corner2_pixel, corner3_pixel, corner4_pixel]
+                                    for j in range(4):
+                                        pt1 = corners_pixel[j]
+                                        pt2 = corners_pixel[(j + 1) % 4]
+                                        cv2.line(out_img,
+                                                 (int(pt1[0]), int(pt1[1])),
+                                                 (int(pt2[0]), int(pt2[1])),
+                                                 (0, 255, 0), 2, cv2.LINE_AA)
+
+                                else:
+                                    # 如果预测的装甲板中心点不在图像内，在图像边缘绘制一个指示箭头
+                                    # 计算方向向量
+                                    dir_x = predicted_center_pixel[0] - img_width / 2
+                                    dir_y = predicted_center_pixel[1] - img_height / 2
+
+                                    # 归一化
+                                    norm = np.sqrt(dir_x ** 2 + dir_y ** 2)
+                                    if norm > 0:
+                                        dir_x /= norm
+                                        dir_y /= norm
+
+                                    # 在图像边缘绘制箭头
+                                    if predicted_center_pixel[0] < 0:
+                                        edge_x = 10
+                                        edge_y = int(img_height / 2 + dir_y * img_height / 3)
+                                    elif predicted_center_pixel[0] >= img_width:
+                                        edge_x = img_width - 10
+                                        edge_y = int(img_height / 2 + dir_y * img_height / 3)
+                                    elif predicted_center_pixel[1] < 0:
+                                        edge_x = int(img_width / 2 + dir_x * img_width / 3)
+                                        edge_y = 10
+                                    else:  # predicted_center_pixel[1] >= img_height
+                                        edge_x = int(img_width / 2 + dir_x * img_width / 3)
+                                        edge_y = img_height - 10
+
+                                    # 绘制指示箭头
+                                    cv2.arrowedLine(out_img,
+                                                    (edge_x - int(30 * dir_x), edge_y - int(30 * dir_y)),
+                                                    (edge_x, edge_y),
+                                                    (0, 255, 0), 2, tipLength=0.3)
+                                    cv2.putText(out_img, f"Pred {i + 1}",
+                                                (edge_x + 10, edge_y),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                    # ==================== 5. 绘制机器人轮廓 (Polygon) ====================
+                    if hasattr(robot, 'armor_center_point') and robot.armor_center_point:
+                        armor_centers = robot.armor_center_point[0] if isinstance(robot.armor_center_point[0],
+                                                                                  list) else robot.armor_center_point
+
+                        if len(armor_centers) >= 4:
+                            # 将装甲板中心点按顺时针顺序连接
+                            points_pixel = []
+                            for center_3d in armor_centers[:4]:  # 取前4个点
+                                if isinstance(center_3d, (list, np.ndarray)) and len(center_3d) >= 3:
+                                    point_pixel = camera2xy(np.array(center_3d, dtype=np.float32))
+                                    points_pixel.append((int(point_pixel[0]), int(point_pixel[1])))
+
+                            # 绘制机器人轮廓（多边形）- 只绘制在图像内的点
+                            valid_points = []
+                            for pt in points_pixel:
+                                if 0 <= pt[0] < img_width and 0 <= pt[1] < img_height:
+                                    valid_points.append(pt)
+
+                            if len(valid_points) >= 3:
+                                # 绘制轮廓线（青色）
+                                for i in range(len(valid_points)):
+                                    pt1 = valid_points[i]
+                                    pt2 = valid_points[(i + 1) % len(valid_points)]
+                                    cv2.line(out_img, pt1, pt2, (255, 255, 0), 3, cv2.LINE_AA)
+
+                                # 填充机器人内部（半透明青色）
+                                if len(valid_points) >= 3:
+                                    overlay = out_img.copy()
+                                    pts = np.array(valid_points, dtype=np.int32)
+                                    cv2.fillPoly(overlay, [pts], (255, 255, 0))
+                                    cv2.addWeighted(overlay, 0.2, out_img, 0.8, 0, out_img)
+
+                    # ==================== 6. 显示状态信息 ====================
+                    detected_count = len(robot.armor_plates_camera_positions)
+
+                    total_centers_count = 0
+                    if hasattr(robot, 'armor_center_point') and robot.armor_center_point:
+                        temp_centers = robot.armor_center_point
+                        if isinstance(temp_centers, list) and len(temp_centers) > 0 and isinstance(
+                                temp_centers[0], list):
+                            total_centers_count = len(temp_centers[0])
+                        elif isinstance(temp_centers, list):
+                            total_centers_count = len(temp_centers)
+
+                    predicted_count = max(0, total_centers_count - detected_count)
+
+                    status_y = 30
+                    # 1. 显示机器人中心坐标
+                    cv2.putText(out_img,
+                                f"Robot Center: X={robot.center[0]:.2f}m, Z={robot.center[2]:.2f}m",
+                                (10, status_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+                    # 2. 显示装甲板数量
+                    cv2.putText(out_img,
+                                f"Armors: Detected={detected_count}, Predicted={predicted_count}",
+                                (10, status_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                    # 3. [新增] 显示双板夹角 (当检测到 >= 2 个装甲板时)
+                    next_y = status_y + 60
+                    if detected_count >= 2:
+                        # 获取上一轮添加到 GuardRobot 中的 angle_between_plates 属性
+                        # 使用 getattr 防止旧版本类定义报错
+                        angle_val = getattr(robot, 'angle_between_plates', 0.0)
+
+                        # 绘制角度信息 (使用青色/黄色高亮)
+                        cv2.putText(out_img, f"Dual Angle: {angle_val:.2f} deg",
+                                    (10, next_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        next_y += 30  # 下移一行，为图例腾出空间
+
+                    # 添加图例
+                    legend_y = next_y + 10
+                    cv2.putText(out_img, "Legend:", (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                (255, 255, 255), 2)
+
+                    cv2.circle(out_img, (100, legend_y - 5), 6, (0, 0, 255), -1)
+                    cv2.putText(out_img, ": Robot Center", (110, legend_y), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 255), 1)
+
+                    cv2.circle(out_img, (230, legend_y - 5), 5, (255, 0, 0), -1)
+                    cv2.putText(out_img, ": Detected Armor", (240, legend_y), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 255), 1)
+
+                    cv2.circle(out_img, (380, legend_y - 5), 5, (0, 255, 0), -1)
+                    cv2.putText(out_img, ": Predicted Armor", (390, legend_y), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 255), 1)
+
+                    # ==================== Console Output ====================
+                    # 1. 打印机器人中心坐标
+                    print(f"Robot Center: X={robot.center[0]:.4f}m, Z={robot.center[2]:.4f}m")
+
+                    # 2. 打印装甲板数量
+                    print(f"Armors: Detected={detected_count}, Predicted={predicted_count}")
+
+                    # 3. 打印双板夹角
+                    if detected_count >= 2:
+                        angle_val = getattr(robot, 'angle_between_plates', 0.0)
+                        print(f"Dual Angle: {angle_val:.2f} deg")
+
+                    # 分隔符
+                    print("-" * 30)
 
             except Exception as e:
-                print(f"[Center-Normal] error: {e}")
+                print(f"Prediction Error: {e}")
+                # import traceback
+                # traceback.print_exc()
 
-        # 写出与显示（在线场景写文件可选）
-        if video_writer is not None:
-            video_writer.write(out_img)
+        cnt += 1
+        if cnt == 20:
+            fps = 20 / (time.time() - time1)
+            time1 = time.time()
+            cnt = 0
+            print(f"FPS: {fps:.2f}")
 
+        # 如果需要显示视频流
         if is_show_video:
-            cv2.imshow("vision output", out_img)
-            if cv2.waitKey(1) & 0xFF == 27:
+            cv2.imshow("camera_output", out_img)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-
-        # 录制时长到达自动退出
-        if 0 < save_video_time < time.time() - start_time:
-            break
 
     # 清理资源
     if video_writer is not None:
