@@ -3,11 +3,13 @@ import numpy as np
 import time
 import math
 from collections import deque
+from all_function import camera2gimbal, ballistic_compensation
 
 from sympy.abc import theta
 
 # 假设这些类定义在 all_type 模块中
 from all_type import ArmorPlate, Color, TroopType
+from setting import PREDICTION_TIME_THRESHOLD
 
 # =========================================================================
 # [关键修改] 从外部文件导入 6D 卡尔曼滤波类
@@ -113,6 +115,10 @@ class SpinRadiusManager:
                     else:
                         self.omega = raw_omega
 
+        # [新增] 角速度阈值：当角速度小于 0.5 时直接置为 0
+        if abs(self.omega) < 0.5:
+            self.omega = 0.0
+
         self.last_armor_yaw = current_yaw
 
         # 4. 旋转方向锁定与状态机更新
@@ -161,6 +167,10 @@ class SpinRadiusManager:
                         self.omega = self.omega * (1 - self.omega_alpha) + raw_omega * self.omega_alpha
                     else:
                         self.omega = raw_omega
+
+        # [新增] 角速度阈值：当角速度小于 0.5 时直接置为 0
+        if abs(self.omega) < 0.5:
+            self.omega = 0.0
 
         self.last_armor_yaw = current_yaw
 
@@ -389,18 +399,24 @@ class GuardRobot:
         # 时间戳记录，用于计算 dt
         self.last_timestamp = time.time()
 
-        # [新增] 记录程序启动时间，用于输出相对时间
-        self.program_start_time = time.time()
+        # [新增] 预测角度与通信管理器
+        self.prediction_time_threshold = PREDICTION_TIME_THRESHOLD
+        self.vision_manager = None
 
-        # [新增] 总延迟时间 self.T (包含飞行时间+系统延迟)，默认 0.2s，可根据实际情况调整
-        self.T = 0.2
-
-        # [新增] 平移速度预测相关
-        self.velocity = np.array([0.0, 0.0, 0.0]) # 线速度向量
-        self.center_history = deque(maxlen=5)     # 中心点历史记录 (pos, time)用于差分计算速度
-
-        # [新增] 预测打击点列表 (用于绘图)
-        self.predicted_shoot_points = []
+    def _init_kf_for_plate(self, plate_idx: int, initial_points: List):
+        """
+        [内部方法] 为指定的装甲板初始化 KF 滤波器
+        :param plate_idx: 装甲板索引
+        :param initial_points: 初始观测点列表 (4个点)
+        """
+        # init_cov=1000: 初始协方差大，表示初始不确定性高，快速收敛到测量值
+        # process_noise=5000: 过程噪声大，表示相信物体的运动是多变的，不过分依赖模型预测 (对抗滞后)
+        # measure_noise=0.1: 测量噪声小，表示比较相信视觉测量的当前位置
+        self.kf_map[plate_idx] = [
+            KalmanFilter6D(measure_dim=3, init_cov=1000.0, measure_noise=0.1, process_noise=5000.0,
+                           x=p[0], y=p[1], z=p[2])
+            for p in initial_points
+        ]
 
     def cal_armor(self):
         """检查是否有有效的装甲板数据"""
@@ -422,14 +438,7 @@ class GuardRobot:
             # 1. 检查该装甲板是否有对应的滤波器组，没有则初始化
             if idx not in self.kf_map:
                 # 初始化：为该装甲板的 4 个角点分别创建 6D 卡尔曼滤波器
-                # init_cov=1000: 初始协方差大，表示初始不确定性高，快速收敛到测量值
-                # process_noise=5000: 过程噪声大，表示相信物体的运动是多变的，不过分依赖模型预测 (对抗滞后)
-                # measure_noise=0.1: 测量噪声小，表示比较相信视觉测量的当前位置
-                self.kf_map[idx] = [
-                    KalmanFilter6D(measure_dim=3, init_cov=1000.0, measure_noise=0.1, process_noise=5000.0,
-                                   x=p[0], y=p[1], z=p[2])
-                    for p in points
-                ]
+                self._init_kf_for_plate(idx, points)
 
             # 2. 对 4 个角点分别进行滤波
             filtered_points = []
@@ -490,6 +499,11 @@ class GuardRobot:
                 # 简单的低通滤波
                 alpha_v = 0.8
                 self.velocity = self.velocity * (1 - alpha_v) + raw_v * alpha_v
+
+                # [新增] 线速度阈值：3个方向的分量小于 0.05 m/s 时置为 0
+                for i in range(3):
+                    if abs(self.velocity[i]) < 0.05:
+                        self.velocity[i] = 0.0
             else:
                 self.velocity = np.array([0.0, 0.0, 0.0])
 
@@ -625,7 +639,7 @@ class GuardRobot:
             self.armor_center_point.append([s1_xz[0], side_y, s1_xz[1]])
             self.armor_center_point.append([s2_xz[0], side_y, s2_xz[1]])
 
-    def predict_shooting_times(self) -> List[float]:
+    def predict_shooting_times(self, current_pitch=0, current_yaw=0) -> List[float]:
         """
         [修改功能] 预测适合发射子弹的时间节点
         逻辑：
@@ -668,24 +682,136 @@ class GuardRobot:
 
             # 击打时刻 (提前量)
             shoot_time_abs = target_arrival_time - self.T
+            predicted_times.append(shoot_time_abs)
 
-            # 过滤
-            if shoot_time_abs > current_time:
-                rel_shoot_time = shoot_time_abs - self.program_start_time
-                predicted_times.append(rel_shoot_time)
+            # 计算预测点坐标和旋转角度
+            target_3d = self.get_predicted_target_position(time_to_rotate)
+            yaw_rot, pitch_rot = 0, 0
+            if target_3d is not None:
+                yaw_rot, pitch_rot = self.get_rotation_angle(target_3d, current_pitch, current_yaw)
+                p_str = f"({target_3d[0]:.3f}, {target_3d[1]:.3f}, {target_3d[2]:.3f})"
+            else:
+                p_str = "None"
 
-                # [新增] 计算该时刻的预测打击位置并将结果存入列表
-                pred_pos = self.get_predicted_target_position(time_to_rotate)
-
-                if pred_pos is not None:
-                     self.predicted_shoot_points.append(pred_pos)
-
-                pos_str = f"({pred_pos[0]:.2f}, {pred_pos[1]:.2f}, {pred_pos[2]:.2f})" if pred_pos is not None else "N/A"
-                print(f"  -> Shot {k} (+{int(k*90)}deg): {rel_shoot_time:.4f}s | Pos: {pos_str}")
+            print(f"      - {k * 90} deg: Target={p_str} | Rot: Yaw={yaw_rot*180/math.pi:.2f}, Pitch={pitch_rot*180/math.pi:.2f} | Arrival={target_arrival_time - self.program_start_time:.3f}s")
 
         return predicted_times
 
-    def use_robot_prediction(self):
+    def get_rotation_angle(self, armor_pos, current_pitch, current_yaw):
+        """
+        计算需要旋转的角度
+        :param armor_pos: 预测后的装甲板坐标 (相机坐标系)
+        :param current_pitch: 当前 pitch (弧度)
+        :param current_yaw: 当前 yaw (弧度)
+        :return: (yaw, pitch) 需要旋转的角度 (绝对角度)
+        """
+        if armor_pos is None:
+            return 0, 0
+
+        # 转为云台坐标
+        gimbal_pos = camera2gimbal(armor_pos, current_pitch)
+        ax, ay, az = gimbal_pos
+
+        # 计算 Pitch (使用弹道补偿)
+        # ballistic_compensation 返回的是补偿后的目标 Pitch 角度
+        target_pitch = ballistic_compensation(gimbal_pos)
+
+        # 计算 Yaw
+        # ax 是水平方向 (左为正)，az 是深度 (前为正)
+        # math.atan2(y, x) -> math.atan2(ax, az) 返回的是相对于 Z 轴的偏角
+        if az == 0:
+            target_yaw = current_yaw
+        else:
+            relative_yaw = math.atan2(ax, az)
+            target_yaw = current_yaw + relative_yaw
+
+        # 归一化 Yaw 到 [-pi, pi]
+        while target_yaw < -math.pi: target_yaw += 2 * math.pi
+        while target_yaw > math.pi: target_yaw -= 2 * math.pi
+
+        return target_yaw, target_pitch
+
+    def predict_and_send_target(self, vision_manager, time_threshold, current_pitch, current_yaw):
+        """
+        [修改功能] 预测多个未来节点，从中筛选出满足时间阈值的最近点，并发送给电控
+        :param vision_manager: 视觉通信管理器实例 (VisionData_t)
+        :param time_threshold: 最小时间延迟阈值 (秒, 例如 1.0)
+        :param current_pitch: 当前云台 Pitch
+        :param current_yaw: 当前云台 Yaw
+        :return: (yaw_deg, pitch_deg, target_3d) 选中点的参数
+        """
+        # 1. 触发条件：单板且有有效转速
+        if len(self.armor_plates_camera_positions) != 1:
+            return None, None, None
+
+        mgr = TestRobotCenter.spin_manager
+        omega = mgr.omega
+        if abs(omega) < 0.1:
+            return None, None, None
+
+        # 2. 遍历预测点 (90度步进, 最多10个点)
+        target_time_offset = None
+        target_3d = None
+        found_target = False
+
+        period_angle = np.pi / 2 # 90度
+
+        for k in range(1, 11):
+            # 需要转过的角度 (弧度)
+            angle_to_rotate = k * period_angle
+            # 对应的未来时间增量
+            time_to_rotate = angle_to_rotate / abs(omega)
+
+            # [筛选]: 找到第一个大于时间阈值的点
+            if time_to_rotate > time_threshold:
+                target_time_offset = time_to_rotate
+                # 获取该时刻的三维坐标
+                target_3d = self.get_predicted_target_position(target_time_offset)
+                found_target = True
+                print(f"[Send] Selected Prediction: k={k} ({k*90} deg), Time={target_time_offset:.3f}s (> {time_threshold}s)")
+                break
+
+        if not found_target:
+            # 如果都不满足，可能转速太慢，或策略选择放弃
+            # 这里可以选择返回最远的第10个点，或者不做任何操作
+            # 策略：不发送
+            return None, None, None
+
+        if target_3d is None:
+            return None, None, None
+
+        # 4. 计算需要的云台角度 (绝对角度)
+        target_yaw_rad, target_pitch_rad = self.get_rotation_angle(target_3d, current_pitch, current_yaw)
+
+        # 计算相对旋转量 (用于返回显示 "need rotate angle")
+        diff_yaw_rad = target_yaw_rad - current_yaw
+        # 归一化 diff_yaw 到 [-pi, pi]
+        while diff_yaw_rad < -math.pi: diff_yaw_rad += 2 * math.pi
+        while diff_yaw_rad > math.pi: diff_yaw_rad -= 2 * math.pi
+
+        diff_pitch_rad = target_pitch_rad - current_pitch
+
+        # 5. 计算距离
+        distance = np.linalg.norm(target_3d)
+
+        # 6. 发送数据
+        # 参考 main_cam 系统逻辑:
+        # Yaw 发送绝对值
+        # Pitch 发送 -(target - current) = current - target (可能是符号约定)
+        send_yaw = target_yaw_rad
+        send_pitch = -(target_pitch_rad - current_pitch)
+
+        if vision_manager:
+            vision_manager.set_data(send_yaw, send_pitch, distance, 1, 1, 0)
+            vision_manager.send()
+
+        # 7. 返回结果供打印 (转换为角度制，返回需要旋转的角度增量)
+        yaw_deg_diff = math.degrees(diff_yaw_rad)
+        pitch_deg_diff = math.degrees(diff_pitch_rad)
+
+        return yaw_deg_diff, pitch_deg_diff, target_3d
+
+    def use_robot_prediction(self, current_pitch=0, current_yaw=0, vision_manager=None):
         """
         [主入口函数] 流程控制
         每帧图像处理时调用此函数。
@@ -695,7 +821,11 @@ class GuardRobot:
         2. (可选) 对所有装甲板角点进行卡尔曼滤波 (KF)
         3. 调用几何解算计算机器人中心
         4. 生成虚拟装甲板用于展示
+        5. (可选) 调用预测并发送给电控
         """
+        if vision_manager:
+            self.vision_manager = vision_manager
+
         if not self.cal_armor(): return
 
         # --- 1. 计算时间步长 dt ---
@@ -726,7 +856,11 @@ class GuardRobot:
             self.get_another_armor_plate_center_by_center()
 
             # [新增] 调用射击时间预测
-            self.predict_shooting_times()
+            self.predict_shooting_times(current_pitch, current_yaw)
+
+            # [新增] 调用预测并发送给电控
+            if self.vision_manager:
+                 self.predict_and_send_target(self.vision_manager, self.prediction_time_threshold, current_pitch, current_yaw)
 
             # 调试用的打印 (可选)
             # if len(target_coordinates) >= 2:

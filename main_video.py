@@ -288,7 +288,8 @@ def run(video_path):
         if len(robot.armor_plates_camera_positions) > 0:
             detected_num = len(robot.armor_plates_camera_positions)
             try:
-                robot.use_robot_prediction()
+                # 视频模式下没有真实反馈，pitch/yaw 默认为 0
+                robot.use_robot_prediction(current_pitch=0, current_yaw=0)
                 # 获取预测结果
                 if robot.center is not None:
                     # print(f"机器人中心坐标: {robot.center}")
@@ -700,10 +701,31 @@ def run(video_path):
 
         # 继续处理其他代码...
 
-        # predicted_armor_yaw = math.atan2(predict_armor[1], predict_armor[0])
-        # cv2.circle(out_img, (int(predict_armor[0]), int(predict_armor[1])), 5, (0, 0, 255), -1)
-        # cv2.putText(out_img, f"yaw:{predicted_armor_yaw:.2f}", (int(predict_armor[0]), int(predict_armor[1])),
-        #             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        # 计算旋转角度并显示 (新增)
+        if hasattr(robot, 'armor_center_point') and robot.armor_center_point:
+             # 处理可能的数据结构嵌套
+             armor_centers = robot.armor_center_point[0] if (len(robot.armor_center_point) > 0 and isinstance(robot.armor_center_point[0], list)) else robot.armor_center_point
+
+             if len(armor_centers) > 0:
+                 # 取第一个预测点作为目标 (简单策略)
+                 target_pos = armor_centers[0]
+                 if isinstance(target_pos, (list, np.ndarray)) and len(target_pos) >= 3:
+                     target_pos_np = np.array(target_pos, dtype=np.float32)
+
+                     # 假设当前云台 pitch/yaw 为 0 (因为是视频回放，无真实反馈)
+                     curr_pitch = 0
+                     curr_yaw = 0
+
+                     target_yaw, target_pitch = robot.get_rotation_angle(target_pos_np, curr_pitch, curr_yaw)
+
+                     print(f"Target Point: {target_pos_np} | Target Rotation -> Yaw: {target_yaw * 180 / math.pi:.2f} deg, Pitch: {target_pitch * 180 / math.pi:.2f} deg")
+
+                     # 可视化
+                     center_pixel = camera2xy(target_pos_np)
+                     if 0 <= center_pixel[0] < out_img.shape[1] and 0 <= center_pixel[1] < out_img.shape[0]:
+                         cv2.putText(out_img, f"Y:{target_yaw*180/math.pi:.1f} P:{target_pitch*180/math.pi:.1f}",
+                                     (int(center_pixel[0]), int(center_pixel[1]) + 20),
+                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         video_writer.write(out_img)
         traj_video_writer.write(traj_img)
         armor_traj_video_writer.write(armor_traj_img)

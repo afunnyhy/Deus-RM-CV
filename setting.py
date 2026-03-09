@@ -132,3 +132,6 @@ elif cameraID == CameraID.HAIKANG_2:  # 海康相机2
 
 # 自动配置yaw运动参数t0
 t0 = t0[my_TroopType]
+
+# 预测发射延迟阈值 (单位: 秒, 筛选大于此时间的最小预测点)
+PREDICTION_TIME_THRESHOLD = 1.0
