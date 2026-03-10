@@ -18,7 +18,7 @@ class VisionData_t:
         self.pitch_angle = 0  # 俯仰角
         self.yaw_angle = 0  # 偏航角(水平角)
         self.distance = 0
-        self.centre_lock = 0
+        self.center_lock = 0
         self.identify_target = 0
         self.identify_buff = 0
         # 接收的数据
@@ -33,7 +33,7 @@ class VisionData_t:
         if self.uart and self.uart.is_open:
             data = struct.pack('BB', self.BEGIN, self.CmdID)
             data = data + struct.pack('fff', float(self.pitch_angle), float(self.yaw_angle), float(self.distance))
-            data = data + struct.pack('BBBB', self.centre_lock, self.identify_target, self.identify_buff, self.END)
+            data = data + struct.pack('BBBB', self.center_lock, self.identify_target, self.identify_buff, self.END)
             self.uart.write(data)
         else:
             # print("UART未打开或已关闭")
@@ -58,7 +58,7 @@ class VisionData_t:
                     continue
 
                 data = self.uart.read(18)
-
+                # print(rdata, data)
                 if len(data) != 18:
                     print("接收到的数据不完整")
                     continue

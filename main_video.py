@@ -116,7 +116,7 @@ def run(video_path):
     video_writer = cv2.VideoWriter(output_file, fourcc, fps, frame_size)
     if used_yolo:
         # 初始化模型推断类
-        armor_de = ArmorDetector(model_path, model_name, CUDA, test_color, ".pt")  # 我方颜色
+        armor_de = ArmorDetector(model_path, model_name, CUDA, test_color, ".engine")  # 我方颜色
     else:
         # 初始化CV类
         armor_de = armor_getter(test_color)

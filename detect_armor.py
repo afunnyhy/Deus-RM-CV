@@ -1,4 +1,7 @@
 import os
+
+import torch
+
 from ultralytics import YOLO
 from all_type import *
 import time
@@ -7,7 +10,8 @@ import cv2
 
 class ArmorDetector:  # 模型推理类
 
-    def __init__(self, model_path, model_name, CUDA, CmdID, model_type=".engine"):
+    def __init__(self, model_path, model_name, CUDA, CmdID, model_type=".onnx"):
+        print(torch.cuda.is_available())
         self.photo = None
         self.CUDA = CUDA  # 是否使用GPU
         self.CmdID = CmdID  # 我方装甲板颜色id
@@ -17,6 +21,7 @@ class ArmorDetector:  # 模型推理类
         self.model_path = os.path.abspath(os.path.join(model_path, model_name))  # 模型路径
         print("model path:", self.model_path)
         self.model = YOLO(self.model_path, task="detect")  # 初始化模型
+        # print(self.model.device)
         # 初始化颜色和装甲板类型
         self.label_index = {
             "blue3": (Color.BLUE, TroopType.INFANTRY),
@@ -47,8 +52,9 @@ class ArmorDetector:  # 模型推理类
 
         # 运行推理
         start = time.time()
-        output = self.model(frame_img, imgsz=self.resize_shape, device="0" if self.CUDA else "cpu", verbose=False)
-        # print(time.time()-start)
+        output = self.model(frame_img, imgsz=self.resize_shape, device="cuda" if self.CUDA else "cpu", verbose=False)
+        # print(f"Model device: {self.model.device}")
+        # print(round(1/(time.time()-start),2))
 
         # 解析输出
         detected = []  # 检测到的装甲板

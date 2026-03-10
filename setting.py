@@ -14,7 +14,7 @@ origin_gimbal_new_sb_up = np.array([0, 0.04902, -0.08932])
 origin_gimbal_new_sb_down = np.array([0, -0.04509, -0.18435])
 
 # 新步兵相机上置
-origin_gimbal_bb_up = np.array([0, 0.05052, -0.16674])
+origin_gimbal_bb_up = np.array([0, -0.04959, -0.17185])
 
 # 新英雄相机下置
 origin_gimbal_yx_down = np.array([0, -0.0563, -0.23985])
@@ -57,7 +57,7 @@ recorrect_pixel = 0.92
 # 重力加速度
 g = 9.79460
 # 默认初始弹速(m/s)
-defaults_bullet_speed = 25
+defaults_bullet_speed = 17.5
 # yaw动态时补偿参数t0,由不同机器人暴力测试得出
 t0 = {
     TroopType.SENTINEL: 0.5,  # 哨兵的yaw运动参数
@@ -67,7 +67,7 @@ t0 = {
 
 # 对局需要手动设置的重要参数------------------------------------------------------------------------------------------
 # 我方颜色,后根据通信自动设置
-friend_color = Color.BLUE
+friend_color = Color.RED
 # 我方兵种 (哨兵SENTINEL 英雄HERO 步兵INFANTRY)
 my_TroopType = TroopType.INFANTRY
 
@@ -89,12 +89,12 @@ if my_TroopType == TroopType.HERO:
 # 自动选择相机
 cameraID = CameraID.HAIKANG_2  # 相机ID
 if my_TroopType == TroopType.INFANTRY:  # 步兵用海康2相机
-    cameraID = CameraID.HAIKANG_2
+    cameraID = CameraID.HAIKANG_1
 elif my_TroopType == TroopType.HERO:  # 英雄用海康1相机
     cameraID = CameraID.HAIKANG_1
 elif my_TroopType == TroopType.SENTINEL:  # 哨兵用大恒相机
     cameraID = CameraID.DAHENG_0
-# cameraID = CameraID.HAIKANG_1  # 强制选择相机ID
+cameraID = CameraID.HAIKANG_1 # 强制选择相机ID
 
 # 自动选择平移向量
 origin_gimbal = origin_gimbal_bb_up
@@ -111,7 +111,7 @@ elif my_TroopType == TroopType.SENTINEL:  # 哨兵
 camera_flip = False  # 相机翻转
 if my_TroopType in [TroopType.INFANTRY, TroopType.HERO, TroopType.SENTINEL]:
     camera_flip = True
-# camera_flip = False  # 强制选择相机翻转
+camera_flip = False  # 强制选择相机翻转
 
 # 自动配置相机内参矩阵和相机类型
 camera_matrix = haikang_2_camera_matrix  # 相机内参矩阵
