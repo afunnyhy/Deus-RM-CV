@@ -3,6 +3,7 @@ import os
 import sys
 import onnxruntime as ort
 import cv2
+from chase_sender import *
 import torch
 import numpy as np
 import time
@@ -33,7 +34,7 @@ USE_OAK = False
 USE_DH = True
 FPS_TIME = 3
 ROTATE = True
-#is_show_video=False
+# is_show_video=False
 
 ROOT = os.getcwd()
 if str(ROOT) not in sys.path:
@@ -45,6 +46,7 @@ TIMEOUT = 5
 
 # communication
 vision = VisionData_t(PORT, BPS, TIMEOUT)
+sender = EnemyVisionSender(target_ip="192.168.1.5", target_port=8964)
 
 # 初始化3D绘图
 if is_show_3d:
@@ -258,11 +260,12 @@ def run():
                 continue
             lock = 0
             if max(abs(angle_xoz - vision.yaw), abs(angle_yoz)) > 1.0 * math.pi / 180:
-                vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, 0)
                 lock = 0
             else:
-                vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, 1)
                 lock = 1
+
+            vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, lock)  # 发给电控
+            sender.update_data(is_detected=True, rel_x=az, rel_y=ax)  # 发给导航
 
             # 标记显示预测后的装甲板
             # predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
@@ -274,7 +277,9 @@ def run():
             # print(f"yaw旋转到{angle_xoz * 180 / math.pi}°,pitch旋转{angle_yoz * 180 / math.pi}°")
             # vision.send()
         else:
-            vision.set_data(vision.yaw, 0, 0, 0, 0)
+            vision.set_data(vision.yaw, 0, 0, 0, 0)  # 发给电控
+            sender.update_data(is_detected=False, rel_x=0, rel_y=0)  # 发给导航
+
         # cv2.putText(out_img,
         #             f"received pitch:{(vision.pitch * 180 / math.pi) if vision.pitch is not None else 0:<9.3f} yaw:{(vision.yaw * 180 / math.pi) if vision.yaw is not None else 0:<9.3f} ",
         #             (50, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
@@ -309,4 +314,5 @@ if __name__ == "__main__":
     t2 = threading.Thread(target=run)
     t1.start()
     t2.start()
+    sender.start(hz=50.0)
     # run()
