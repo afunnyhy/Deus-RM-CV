@@ -47,7 +47,7 @@ haikang_2_dist_coefficients = np.array([-0.0451, 0.4553, -1.4647e-4, 9.4951e-4, 
 
 # 模型参数--------------------------------------------------------------------------------------------------------
 model_path = "./weight/"
-model_name = "20250318_normal"
+model_name = "20250318_normal_dynamic"
 
 # CV提点参数------------------------------------------------------------------------------------------------------
 # CV提点后微小修正灯条角点位置,延长或缩小的百分比
@@ -69,7 +69,7 @@ t0 = {
 # 我方颜色,后根据通信自动设置
 friend_color = Color.RED
 # 我方兵种 (哨兵SENTINEL 英雄HERO 步兵INFANTRY)
-my_TroopType = TroopType.INFANTRY
+my_TroopType = TroopType.SENTINEL
 
 # 调试参数--------------------------------------------------------------------------------------------------------
 # 保存视频的时间，单位: 秒，0表示不保存
@@ -94,7 +94,7 @@ elif my_TroopType == TroopType.HERO:  # 英雄用海康1相机
     cameraID = CameraID.HAIKANG_1
 elif my_TroopType == TroopType.SENTINEL:  # 哨兵用大恒相机
     cameraID = CameraID.DAHENG_0
-cameraID = CameraID.HAIKANG_1 # 强制选择相机ID
+# cameraID = CameraID.HAIKANG_1 # 强制选择相机ID
 
 # 自动选择平移向量
 origin_gimbal = origin_gimbal_bb_up
@@ -109,9 +109,9 @@ elif my_TroopType == TroopType.SENTINEL:  # 哨兵
 
 # 自动配置相机翻转
 camera_flip = False  # 相机翻转
-if my_TroopType in [TroopType.INFANTRY, TroopType.HERO, TroopType.SENTINEL]:
+if my_TroopType in [TroopType.SENTINEL]:
     camera_flip = True
-camera_flip = False  # 强制选择相机翻转
+# camera_flip = False  # 强制选择相机翻转
 
 # 自动配置相机内参矩阵和相机类型
 camera_matrix = haikang_2_camera_matrix  # 相机内参矩阵
@@ -129,6 +129,3 @@ elif cameraID == CameraID.HAIKANG_2:  # 海康相机2
     camera_matrix = haikang_2_camera_matrix
     dist_coefficients = haikang_2_dist_coefficients
     cameraType = CameraType.HAIKANG
-
-# 自动配置yaw运动参数t0
-t0 = t0[my_TroopType]

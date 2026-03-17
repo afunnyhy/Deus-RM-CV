@@ -63,7 +63,7 @@ class EnemyVisionSender:
             # 4. 追加校验和并发送 (共 13 字节)
             packet = payload + struct.pack("<B", checksum)
             try:
-                print("发送数据 是否检测到敌人:", self.is_detected, "相对坐标 X:", x, "Y:", y, "校验和:", checksum)
+                # print("发送数据 是否检测到敌人:", self.is_detected, "相对坐标 X:", x, "Y:", y, "校验和:", checksum)
                 self.socket.sendto(packet, (self.target_ip, self.target_port))
             except Exception as e:
                 print(f"发送失败: {e}")
