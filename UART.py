@@ -121,6 +121,18 @@ class VisionData_t:
                     return uart
                 except:
                     pass
+                try:
+                    uart = serial.Serial(
+                        port="/dev/ttyCH341USB" + str(i),
+                        baudrate=bps,
+                        timeout=timeout,
+                        parity=serial.PARITY_NONE,
+                        stopbits=1
+                    )
+                    opened = i
+                    return uart
+                except:
+                    pass
         else:
             uart = serial.Serial(
                 port="/dev/ttyUSB" + str(port),
