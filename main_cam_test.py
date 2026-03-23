@@ -33,6 +33,7 @@ buffers = {
     "ch1": deque(),
     "ch2": deque(),
     "ch3": deque(),
+    "ch4": deque(),
 }
 buffer_lock = threading.Lock()
 
@@ -55,27 +56,32 @@ def oscilloscope():
             ch1 = list(buffers["ch1"])
             ch2 = list(buffers["ch2"])
             ch3 = list(buffers["ch3"])
+            ch4 = list(buffers["ch4"])
 
         ax.clear()
 
         if ch1:
             t1, v1 = zip(*ch1)
             x1 = [t - now for t in t1]
-            ax.plot(x1, v1, label="receive")
+            ax.plot(x1, v1, label="receive_pitch")
 
         if ch2:
             t2, v2 = zip(*ch2)
             x2 = [t - now for t in t2]
-            ax.plot(x2, v2, label="send")
+            ax.plot(x2, v2, label="send_pitch")
 
         if ch3:
             t3, v3 = zip(*ch3)
             x3 = [t - now for t in t3]
-            ax.plot(x3, v3, label="old_diff")
+            ax.plot(x3, v3, label="receive_yaw")
+        if ch4:
+            t4, v4 = zip(*ch4)
+            x4 = [t - now for t in t4]
+            ax.plot(x4, v4, label="send_yaw")
 
         ax.set_xlim(-WINDOW_SECONDS, 0)
-        ax.set_ylim(-25, 0)
-        ax.set_title("Dual-Channel Oscilloscope")
+        ax.set_ylim(-180, 180)
+        ax.set_title("Oscilloscope")
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Amplitude")
         ax.legend()
@@ -305,11 +311,11 @@ def run():
 
             # 补丁
             diff = - (change_angle - angle_pitch)
-            angle_yoz = angle_yoz - diff + 0.25 * diff
+            angle_yoz = angle_yoz - diff + 0.5 * diff
 
             if az < 0.1:  # 距离过近
                 continue
-            angle_xoz = math.atan(ax / az) + vision.yaw
+            angle_xoz = math.atan(ax / az) * 0.5 + vision.yaw
             while angle_xoz < -math.pi:
                 angle_xoz += 2 * math.pi
             while angle_xoz > math.pi:
@@ -326,13 +332,16 @@ def run():
             vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, lock)
             now = time.time()
             dt = now - t0
+
             v1 = vision.pitch * 180 / math.pi
             v2 = angle_yoz * 180 / math.pi
-            v3 = - (change_angle - angle_pitch) * 180 / math.pi
+            v3 = vision.yaw * 180 / math.pi
+            v4 = angle_xoz * 180 / math.pi
             with buffer_lock:
                 buffers["ch1"].append((now, v1))
                 buffers["ch2"].append((now, v2))
                 buffers["ch3"].append((now, v3))
+                buffers["ch4"].append((now, v4))
             # 标记显示预测后的装甲板
             # predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
             # cv2.circle(out_img, predicted_pos2d, 14, (174, 29, 128), 4)
@@ -344,6 +353,12 @@ def run():
             # vision.send()
         else:
             vision.set_data(vision.yaw, 0, 0, 0, 0)
+            v1 = vision.pitch * 180 / math.pi
+            v3 = vision.yaw * 180 / math.pi
+            now = time.time()
+            with buffer_lock:
+                buffers["ch1"].append((now, v1))
+                buffers["ch3"].append((now, v3))
         # cv2.putText(out_img,
         #             f"received pitch:{(vision.pitch * 180 / math.pi) if vision.pitch is not None else 0:<9.3f} yaw:{(vision.yaw * 180 / math.pi) if vision.yaw is not None else 0:<9.3f} ",
         #             (50, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
@@ -379,5 +394,5 @@ if __name__ == "__main__":
     osc_thread = threading.Thread(target=oscilloscope)
     t1.start()
     t2.start()
-    osc_thread.start()
+    # osc_thread.start()
     # run()

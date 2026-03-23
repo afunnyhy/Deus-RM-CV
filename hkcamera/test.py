@@ -12,6 +12,7 @@ import cv2
 import time
 import datetime
 
+
 # # -*- coding: utf-8 -*-
 # import sys
 # import time
@@ -42,9 +43,9 @@ def ToHexStr(num):
     return hexStr
 
 
-
 class HkCaptureVedio:
-    def __init__(self, dev_num: int = 1, exposure_time: float = 5000, gain: float = 10, size=None, Binning=0,balancewiteauto=1):
+    def __init__(self, dev_num: int = 1, exposure_time: float = 5000, gain: float = 10, size=None, Binning=0,
+                 balancewiteauto=1):
         self.cam = MvCamera()
         self.deviceList = MV_CC_DEVICE_INFO_LIST()
         self.n_layer_type = MV_GIGE_DEVICE | MV_USB_DEVICE
@@ -64,8 +65,7 @@ class HkCaptureVedio:
 
         if self.initialize_camera():
             print("打开相机成功")
-            self.Set_parameter(exposure_time, gain,Binning,balancewiteauto)
-
+            self.Set_parameter(exposure_time, gain, Binning, balancewiteauto)
 
     def set_exposure(self, exposure_time):
         """设置曝光时间"""
@@ -84,8 +84,9 @@ class HkCaptureVedio:
             print(f"Set gain failed! Error: {ToHexStr(ret)}")
         else:
             print(f"Gain set to {gain} dB")
-    def Set_parameter(self, exposureTime, gain,binning,balancewiteauto):
-        if  '' == exposureTime or '' == gain:
+
+    def Set_parameter(self, exposureTime, gain, binning, balancewiteauto):
+        if '' == exposureTime or '' == gain:
             print('show info', 'please type in the text box !')
             return MV_E_PARAMETER
         if self.is_open:
@@ -104,8 +105,8 @@ class HkCaptureVedio:
                 print('show error', 'set binning fail! ret = ' + ToHexStr(ret))
                 return ret
             ret = self.cam.MV_CC_SetEnumValue("BalanceWhiteAuto", balancewiteauto)
-            #ret = self.cam.MV_CC_SetEnumValue("BalanceRatioSelector", 0)
-            #ret = self.cam.MV_CC_SetIntValue("BalanceRatio", 458)
+            # ret = self.cam.MV_CC_SetEnumValue("BalanceRatioSelector", 0)
+            # ret = self.cam.MV_CC_SetIntValue("BalanceRatio", 458)
             if ret != 0:
                 print('show error', 'set white fail! ret = ' + ToHexStr(ret))
                 return ret
@@ -190,7 +191,6 @@ class HkCaptureVedio:
             print("Failed to get frame! Error: ", ToHexStr(ret))
             return False, None
 
-
     def delete_came(self):
         # 释放资源
         self.cam.MV_CC_StopGrabbing()
@@ -200,7 +200,7 @@ class HkCaptureVedio:
 
 
 if __name__ == "__main__":
-    cam = HkCaptureVedio(exposure_time=5000,gain=16)
+    cam = HkCaptureVedio(exposure_time=5000, gain=16)
     cam.start_grabbing()
     time_start = time.time()
     cnt = 0
@@ -210,14 +210,13 @@ if __name__ == "__main__":
         if not ret:
             print(111)
             break
-        cv2.imshow("111",frame)
+        cv2.imshow("111", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-        cnt+=1
+        cnt += 1
         if cnt == 20:  # Calculate FPS every 20 frames
             time_end = time.time()
             fps = cnt / (time_end - time_start)
             print(f"FPS: {fps:.2f}")
             time_start = time.time()
             cnt = 0
-

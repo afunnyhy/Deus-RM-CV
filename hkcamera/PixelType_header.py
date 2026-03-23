@@ -3,8 +3,6 @@
 # flags '-c -d -v C:\test_h\PixelType.xml -o PixelType_header.py'
 from ctypes import *
 
-
-
 PixelType_Gvsp_YUV411_Packed = 34340894
 PixelType_Gvsp_Mono1p = 16842807
 PixelType_Gvsp_YCBCR422_8 = 34603067
@@ -161,7 +159,7 @@ intmax_t = c_long
 uintmax_t = c_ulong
 
 # values for enumeration 'MvGvspPixelType'
-MvGvspPixelType = c_int # enum
+MvGvspPixelType = c_int  # enum
 __all__ = ['PixelType_Gvsp_BayerRG8', 'int_fast32_t',
            'PixelType_Gvsp_YCBCR422_8',
            'PixelType_Gvsp_COORD3D_DEPTH_PLUS_MASK', 'uint8_t',
@@ -224,13 +222,13 @@ __all__ = ['PixelType_Gvsp_BayerRG8', 'int_fast32_t',
            'PixelType_Gvsp_BayerGB8', 'PixelType_Gvsp_YCBCR8_CBYCR',
            'PixelType_Gvsp_RGB565_Packed', 'uint32_t',
            'PixelType_Gvsp_YCBCR601_422_8_CBYCRY',
-           'PixelType_Gvsp_Coord3D_ABC32','PixelType_Gvsp_Coord3D_AB32f',
-           'PixelType_Gvsp_Coord3D_AB32','PixelType_Gvsp_Coord3D_ABC16',
-           'PixelType_Gvsp_Coord3D_C32','PixelType_Gvsp_Coord3D_C32f',
-           'PixelType_Gvsp_Coord3D_AC32f_64','PixelType_Gvsp_Coord3D_A32f',
-           'PixelType_Gvsp_Coord3D_AC32','PixelType_Gvsp_Coord3D_AC32f_Planar',
-           'PixelType_Gvsp_Coord3D_A32','PixelType_Gvsp_YUV420SP_NV12',
-           'PixelType_Gvsp_YUV420SP_NV21','PixelType_Gvsp_Coord3D_C16',
+           'PixelType_Gvsp_Coord3D_ABC32', 'PixelType_Gvsp_Coord3D_AB32f',
+           'PixelType_Gvsp_Coord3D_AB32', 'PixelType_Gvsp_Coord3D_ABC16',
+           'PixelType_Gvsp_Coord3D_C32', 'PixelType_Gvsp_Coord3D_C32f',
+           'PixelType_Gvsp_Coord3D_AC32f_64', 'PixelType_Gvsp_Coord3D_A32f',
+           'PixelType_Gvsp_Coord3D_AC32', 'PixelType_Gvsp_Coord3D_AC32f_Planar',
+           'PixelType_Gvsp_Coord3D_A32', 'PixelType_Gvsp_YUV420SP_NV12',
+           'PixelType_Gvsp_YUV420SP_NV21', 'PixelType_Gvsp_Coord3D_C16',
            'PixelType_Gvsp_HB_Mono8',
            'PixelType_Gvsp_HB_Mono10',
            'PixelType_Gvsp_HB_Mono10_Packed',

@@ -225,8 +225,6 @@ def run():
                 if ret_pnp:  # 如果PnP解算成功, 将装甲板中心点添加到结果列表
                     detected_point.append(armor)
 
-        
-
         if len(detected_point) > 0:
             # 选择最佳目标
             armor = target_selector.select_best_target(detected_point)
@@ -239,8 +237,6 @@ def run():
                 found_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
             cv2.circle(out_img, found_pos2d, 11, (0, 200, 200), 4)
             ax, ay, az = armor.gimbal_pos
-
-            
 
             is_find = True
             # print(armor)
@@ -334,7 +330,6 @@ def run():
             # predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
             # cv2.circle(out_img, predicted_pos2d, 14, (174, 29, 128), 4)
 
-           
             # print(f"yaw旋转到{angle_xoz * 180 / math.pi}°,pitch旋转{angle_yoz * 180 / math.pi}°")
             # vision.send()
         else:
@@ -343,7 +338,6 @@ def run():
         #             f"received pitch:{(vision.pitch * 180 / math.pi) if vision.pitch is not None else 0:<9.3f} yaw:{(vision.yaw * 180 / math.pi) if vision.yaw is not None else 0:<9.3f} ",
         #             (50, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
 
-        
         if save_video_time > 0:
             video_writer.write(out_img)
 
@@ -352,19 +346,19 @@ def run():
             # 缩放用于显示的图像（out_img 带有调试信息）
             small_img = cv2.resize(out_img, (0, 0), fx=0.75, fy=0.75, interpolation=cv2.INTER_AREA)
             cv2.imshow("vision output", small_img)
-            
+
             # --- 新增：干净的拍照功能 ---
             key = cv2.waitKey(1) & 0xFF
             if key == ord('s'):  # 按下 's' 键拍照
                 # 使用时间戳命名
                 photo_time = time.strftime("%Y%m%d_%H%M%S")
                 photo_name = f"raw_capture_{photo_time}.jpg"
-                
+
                 # 【关键点】：这里保存的是 orig_frame 而不是 out_img
                 # 如果你在循环开始处对 orig_frame 做了 flip，这里保存的就是翻转后但无文字的图
-                cv2.imwrite(photo_name, orig_frame) 
+                cv2.imwrite(photo_name, orig_frame)
                 print(f"--- 原始照片（无参数）已保存: {photo_name} ---")
-            
+
             elif key == ord('q'):
                 break
             cv2.waitKey(1)

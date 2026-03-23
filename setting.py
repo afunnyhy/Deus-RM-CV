@@ -57,7 +57,7 @@ recorrect_pixel = 0.92
 # 重力加速度
 g = 9.79460
 # 默认初始弹速(m/s)
-defaults_bullet_speed = 17.5
+defaults_bullet_speed = 23
 # yaw动态时补偿参数t0,由不同机器人暴力测试得出
 t0 = {
     TroopType.SENTINEL: 0.5,  # 哨兵的yaw运动参数

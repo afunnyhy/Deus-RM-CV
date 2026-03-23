@@ -8,7 +8,7 @@ import sys
 import os
 
 if sys.platform == 'linux2' or sys.platform == 'linux':
-    if os.path.exists('/usr/lib/libdximageproc.so') : 
+    if os.path.exists('/usr/lib/libdximageproc.so'):
         filepath = '/usr/lib/libdximageproc.so'
     else:
         filepath = '/usr/lib/libgxiapi.so'
@@ -28,37 +28,37 @@ else:
 
 # status  definition
 class DxStatus:
-    OK = 0                               # Operation is successful
-    PARAMETER_INVALID = -101             # Invalid input parameter
-    PARAMETER_OUT_OF_BOUND = -102        # The input parameter is out of bounds
-    NOT_ENOUGH_SYSTEM_MEMORY = -103      # System out of memory
-    NOT_FIND_DEVICE = -104               # not find device
-    STATUS_NOT_SUPPORTED = -105          # operation is not supported
-    CPU_NOT_SUPPORT_ACCELERATE = -106    # CPU does not support acceleration
-  
+    OK = 0  # Operation is successful
+    PARAMETER_INVALID = -101  # Invalid input parameter
+    PARAMETER_OUT_OF_BOUND = -102  # The input parameter is out of bounds
+    NOT_ENOUGH_SYSTEM_MEMORY = -103  # System out of memory
+    NOT_FIND_DEVICE = -104  # not find device
+    STATUS_NOT_SUPPORTED = -105  # operation is not supported
+    CPU_NOT_SUPPORT_ACCELERATE = -106  # CPU does not support acceleration
+
     def __init__(self):
         pass
 
 
 # Bayer layout
 class DxPixelColorFilter:
-    NONE = 0                                # Isn't bayer format
-    RG = 1                                  # The first row starts with RG
-    GB = 2                                  # The first line starts with GB
-    GR = 3                                  # The first line starts with GR
-    BG = 4                                  # The first line starts with BG
+    NONE = 0  # Isn't bayer format
+    RG = 1  # The first row starts with RG
+    GB = 2  # The first line starts with GB
+    GR = 3  # The first line starts with GR
+    BG = 4  # The first line starts with BG
 
     def __init__(self):
         pass
-            
+
 
 # image actual bits
 class DxActualBits:
-    BITS_8 = 8               # 8bit
-    BITS_10 = 10             # 10bit
-    BITS_12 = 12             # 12bit
-    BITS_14 = 14             # 14bit
-    BITS_16 = 16             # 16bit
+    BITS_8 = 8  # 8bit
+    BITS_10 = 10  # 10bit
+    BITS_12 = 12  # 12bit
+    BITS_14 = 14  # 14bit
+    BITS_16 = 16  # 16bit
 
     def __init__(self):
         pass
@@ -67,13 +67,13 @@ class DxActualBits:
 # mono8 image process structure
 class MonoImgProcess(Structure):
     _fields_ = [
-        ('defective_pixel_correct',     c_bool),        # Pixel correct switch
-        ('sharpness',                   c_bool),        # Sharpness switch
-        ('accelerate',                  c_bool),        # Accelerate switch
-        ('sharp_factor',                c_float),       # Sharpen the intensity factor
-        ('pro_lut',                     c_void_p),      # Lookup table
-        ('lut_length',                  c_uint16),      # Lut Buffer length
-        ('array_reserved',              c_ubyte * 32),  # Reserved
+        ('defective_pixel_correct', c_bool),  # Pixel correct switch
+        ('sharpness', c_bool),  # Sharpness switch
+        ('accelerate', c_bool),  # Accelerate switch
+        ('sharp_factor', c_float),  # Sharpen the intensity factor
+        ('pro_lut', c_void_p),  # Lookup table
+        ('lut_length', c_uint16),  # Lut Buffer length
+        ('array_reserved', c_ubyte * 32),  # Reserved
     ]
 
     def __str__(self):
@@ -83,19 +83,19 @@ class MonoImgProcess(Structure):
 # Raw8 Image process structure
 class ColorImgProcess(Structure):
     _fields_ = [
-        ('defective_pixel_correct',     c_bool),        # Pixel correct switch
-        ('denoise',                     c_bool),        # Noise reduction switch
-        ('sharpness',                   c_bool),        # Sharpness switch
-        ('accelerate',                  c_bool),        # Accelerate switch
-        ('arr_cc',                      c_void_p),      # Color processing parameters
-        ('cc_buf_length',               c_uint8),       # Color processing parameters length(sizeof(VxInt16)*9)
-        ('sharp_factor',                c_float),       # Sharpen the intensity factor
-        ('pro_lut',                     c_void_p),      # Lookup table
-        ('lut_length',                  c_uint16),      # The length of the lookup table
-        ('cv_type',                     c_uint),        # Interpolation algorithm
-        ('layout',                      c_uint),        # Bayer format
-        ('flip',                        c_bool),        # Image flip flag
-        ('array_reserved',              c_ubyte * 32),  # Reserved
+        ('defective_pixel_correct', c_bool),  # Pixel correct switch
+        ('denoise', c_bool),  # Noise reduction switch
+        ('sharpness', c_bool),  # Sharpness switch
+        ('accelerate', c_bool),  # Accelerate switch
+        ('arr_cc', c_void_p),  # Color processing parameters
+        ('cc_buf_length', c_uint8),  # Color processing parameters length(sizeof(VxInt16)*9)
+        ('sharp_factor', c_float),  # Sharpen the intensity factor
+        ('pro_lut', c_void_p),  # Lookup table
+        ('lut_length', c_uint16),  # The length of the lookup table
+        ('cv_type', c_uint),  # Interpolation algorithm
+        ('layout', c_uint),  # Bayer format
+        ('flip', c_bool),  # Image flip flag
+        ('array_reserved', c_ubyte * 32),  # Reserved
     ]
 
     def __str__(self):
@@ -105,12 +105,12 @@ class ColorImgProcess(Structure):
 # Field correction process structure
 class FieldCorrectionProcess(Structure):
     _fields_ = [
-        ('bright_buf',                  c_void_p),      # Bright image buffer
-        ('dark_buf',                    c_void_p),      # Dark image buffer
-        ('width',                       c_uint32),      # image width
-        ('height',                      c_uint32),      # image height
-        ('actual_bits',                 c_uint),        # image actual bits
-        ('bayer_type',                  c_uint),        # Bayer Type
+        ('bright_buf', c_void_p),  # Bright image buffer
+        ('dark_buf', c_void_p),  # Dark image buffer
+        ('width', c_uint32),  # image width
+        ('height', c_uint32),  # image height
+        ('actual_bits', c_uint),  # image actual bits
+        ('bayer_type', c_uint),  # Bayer Type
     ]
 
     def __str__(self):
@@ -120,15 +120,15 @@ class FieldCorrectionProcess(Structure):
 # color transform factor
 class ColorTransformFactor(Structure):
     _fields_ = [
-        ('fGain00', c_float),   # red   contribution to the red   pixel (multiplicative factor)
-        ('fGain01', c_float),   # green contribution to the red   pixel (multiplicative factor)
-        ('fGain02', c_float),   # blue  contribution to the red   pixel (multiplicative factor)
-        ('fGain10', c_float),   # red   contribution to the green pixel (multiplicative factor)
-        ('fGain11', c_float),   # green contribution to the green pixel (multiplicative factor)
-        ('fGain12', c_float),   # blue  contribution to the green pixel (multiplicative factor)
-        ('fGain20', c_float),   # red   contribution to the blue  pixel (multiplicative factor)
-        ('fGain21', c_float),   # green contribution to the blue  pixel (multiplicative factor)
-        ('fGain22', c_float),   # blue  contribution to the blue  pixel (multiplicative factor)
+        ('fGain00', c_float),  # red   contribution to the red   pixel (multiplicative factor)
+        ('fGain01', c_float),  # green contribution to the red   pixel (multiplicative factor)
+        ('fGain02', c_float),  # blue  contribution to the red   pixel (multiplicative factor)
+        ('fGain10', c_float),  # red   contribution to the green pixel (multiplicative factor)
+        ('fGain11', c_float),  # green contribution to the green pixel (multiplicative factor)
+        ('fGain12', c_float),  # blue  contribution to the green pixel (multiplicative factor)
+        ('fGain20', c_float),  # red   contribution to the blue  pixel (multiplicative factor)
+        ('fGain21', c_float),  # green contribution to the blue  pixel (multiplicative factor)
+        ('fGain22', c_float),  # blue  contribution to the blue  pixel (multiplicative factor)
     ]
 
     def __str__(self):
@@ -163,7 +163,7 @@ if hasattr(dll, 'DxGetLut'):
 
         # Create buff to get LUT data
         lut_c = (c_uint8 * lut_length_c.value)()
-        status = dll.DxGetLut(contrast_param_c, gamma_c, lightness_c,  byref(lut_c), byref(lut_length_c))
+        status = dll.DxGetLut(contrast_param_c, gamma_c, lightness_c, byref(lut_c), byref(lut_length_c))
 
         return status, lut_c, lut_length_c.value
 
@@ -194,7 +194,6 @@ if hasattr(dll, "DxCalcCCParam"):
         status = dll.DxCalcCCParam(color_cc_param_c, saturation_c, byref(cc_param_c), length_c)
 
         return status, cc_param_c
-
 
 if hasattr(dll, "DxCalcUserSetCCParam"):
     def dx_calc_user_set_cc_param(color_transform_factor, saturation):
@@ -231,7 +230,6 @@ if hasattr(dll, "DxCalcUserSetCCParam"):
 
         return status, cc_param_c
 
-
 if hasattr(dll, "DxGetGammatLut"):
     def dx_get_gamma_lut(gamma_param):
         """
@@ -252,7 +250,6 @@ if hasattr(dll, "DxGetGammatLut"):
 
         return status, gamma_lut, lut_length_c.value
 
-
 if hasattr(dll, "DxGetContrastLut"):
     def dx_get_contrast_lut(contrast_param):
         """
@@ -272,7 +269,6 @@ if hasattr(dll, "DxGetContrastLut"):
         status = dll.DxGetContrastLut(contrast_param_c, byref(contrast_lut), byref(lut_length_c))
 
         return status, contrast_lut, lut_length_c.value
-
 
 if hasattr(dll, 'DxRaw8toRGB24'):
     def dx_raw8_to_rgb24(input_address, output_address, width, height, convert_type, bayer_type, flip):
@@ -315,9 +311,9 @@ if hasattr(dll, 'DxRaw8toRGB24'):
                                    width_c, height_c, convert_type_c, bayer_type_c, flip_c)
         return status
 
-
 if hasattr(dll, 'DxRaw8toRGB24Ex'):
-    def dx_raw8_to_rgb24_ex(input_address, output_address, width, height, convert_type, bayer_type, flip, channel_order):
+    def dx_raw8_to_rgb24_ex(input_address, output_address, width, height, convert_type, bayer_type, flip,
+                            channel_order):
         """
         :brief  Convert Raw8 to Rgb24
         :param input_address:      The input raw image buff address, buff size = width * height
@@ -358,9 +354,8 @@ if hasattr(dll, 'DxRaw8toRGB24Ex'):
         output_address_p.value = output_address
 
         status = dll.DxRaw8toRGB24Ex(input_address_p, output_address_p,
-                                   width_c, height_c, convert_type_c, bayer_type_c, flip_c, channel_order_c)
+                                     width_c, height_c, convert_type_c, bayer_type_c, flip_c, channel_order_c)
         return status
-
 
 if hasattr(dll, 'DxRaw16toRaw8'):
     def dx_raw16_to_raw8(input_address, out_address, width, height, valid_bits):
@@ -393,7 +388,6 @@ if hasattr(dll, 'DxRaw16toRaw8'):
                                    width_c, height_c, valid_bits_c)
         return status
 
-
 if hasattr(dll, 'DxRotate90CW8B'):
     def dx_raw8_rotate_90_cw(input_address, out_address, width, height):
         """
@@ -418,9 +412,8 @@ if hasattr(dll, 'DxRotate90CW8B'):
         out_address_p.value = out_address
 
         status = dll.DxRotate90CW8B(input_address_p, out_address_p,
-                                   width_c, height_c)
+                                    width_c, height_c)
         return status
-
 
 if hasattr(dll, 'DxRotate90CCW8B'):
     def dx_raw8_rotate_90_ccw(input_address, out_address, width, height):
@@ -446,9 +439,8 @@ if hasattr(dll, 'DxRotate90CCW8B'):
         out_address_p.value = out_address
 
         status = dll.DxRotate90CCW8B(input_address_p, out_address_p,
-                                   width_c, height_c)
+                                     width_c, height_c)
         return status
-
 
 if hasattr(dll, "DxImageImprovment"):
     def dx_image_improvement(input_address, output_address, width, height,
@@ -483,7 +475,6 @@ if hasattr(dll, "DxImageImprovment"):
         status = dll.DxImageImprovment(input_address_p, output_address_p, width_c, height_c,
                                        color_correction_param_c, contrast_lut, gamma_lut)
         return status
-
 
 if hasattr(dll, "DxImageImprovmentEx"):
     def dx_image_improvement_ex(input_address, output_address, width, height,
@@ -523,7 +514,6 @@ if hasattr(dll, "DxImageImprovmentEx"):
                                          color_correction_param_c, contrast_lut, gamma_lut, channel_order_c)
         return status
 
-
 if hasattr(dll, "DxBrightness"):
     def dx_brightness(input_address, output_address, image_size, factor):
         """
@@ -548,7 +538,6 @@ if hasattr(dll, "DxBrightness"):
 
         status = dll.DxBrightness(input_address_p, output_address_p, image_size_c, factor_c)
         return status
-
 
 if hasattr(dll, "DxContrast"):
     def dx_contrast(input_address, output_address, image_size, factor):
@@ -575,7 +564,6 @@ if hasattr(dll, "DxContrast"):
         status = dll.DxContrast(input_address_p, output_address_p, image_size_c, factor_c)
         return status
 
-
 if hasattr(dll, "DxSaturation"):
     def dx_saturation(input_address, output_address, image_size, factor):
         """
@@ -600,7 +588,6 @@ if hasattr(dll, "DxSaturation"):
 
         status = dll.DxSaturation(input_address_p, output_address_p, image_size_c, factor_c)
         return status
-
 
 if hasattr(dll, "DxAutoRawDefectivePixelCorrect"):
     def dx_auto_raw_defective_pixel_correct(inout_address, width, height, bit_num):
@@ -632,7 +619,6 @@ if hasattr(dll, "DxAutoRawDefectivePixelCorrect"):
         status = dll.DxAutoRawDefectivePixelCorrect(inout_address_p, width_c, height_c, bit_num_c)
         return status
 
-
 if hasattr(dll, "DxSharpen24B"):
     def dx_sharpen_24b(input_address, output_address, width, height, factor):
         """
@@ -661,7 +647,6 @@ if hasattr(dll, "DxSharpen24B"):
 
         status = dll.DxSharpen24B(input_address_p, output_address_p, width_c, height_c, factor_c)
         return status
-
 
 if hasattr(dll, "DxGetWhiteBalanceRatio"):
     def dx_get_white_balance_ratio(input_address, width, height):
@@ -697,7 +682,6 @@ if hasattr(dll, "DxGetWhiteBalanceRatio"):
 
         return status, (r_ratio_c.value, g_ratio_c.value, b_ratio_c.value)
 
-
 if hasattr(dll, "DxImageMirror"):
     def dx_image_mirror(input_address, output_address, width, height, mirror_mode):
         """
@@ -727,7 +711,6 @@ if hasattr(dll, "DxImageMirror"):
         status = dll.DxImageMirror(input_address_p, output_address_p, width_c, height_c, mirror_mode_c)
 
         return status
-
 
 '''
 if hasattr(dll, "DxRaw8ImgProcess"):
@@ -820,7 +803,6 @@ if hasattr(dll, "DxMono8ImgProcess"):
         return status
 '''
 
-
 if hasattr(dll, 'DxGetFFCCoefficients'):
     def dx_get_ffc_coefficients(bright_img, dark_img, actual_bits, bayer_type, width, height, target_value):
         """
@@ -871,7 +853,6 @@ if hasattr(dll, 'DxGetFFCCoefficients'):
 
         return status, ffc_coefficients_c, ffc_coefficients_len_c.value
 
-
 if hasattr(dll, "DxFlatFieldCorrection"):
     def dx_flat_field_correction(input_address, output_address, actual_bits, width, height, ffc_coefficients):
         """
@@ -906,5 +887,3 @@ if hasattr(dll, "DxFlatFieldCorrection"):
                                            byref(ffc_coefficients.get_ctype_array()), byref(ffc_coefficients_len_c))
 
         return status
-
-
