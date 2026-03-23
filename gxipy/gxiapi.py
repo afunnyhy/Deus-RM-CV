@@ -16,16 +16,17 @@ if sys.version_info.major > 2:
     INT_TYPE = int
 else:
     INT_TYPE = (int, long)
-    
+
 
 class DeviceManager(object):
     __instance_num = 0
+
     def __new__(cls, *args, **kw):
         cls.__instance_num += 1
         status = gx_init_lib()
         StatusProcessor.process(status, 'DeviceManager', 'init_lib')
         return object.__new__(cls, *args)
-    
+
     def __init__(self):
         self.__device_num = 0
         self.__device_info_list = []
@@ -47,7 +48,7 @@ class DeviceManager(object):
         device_info_list = []
         for i in range(num):
             device_info_list.append({
-                'index': i+1,
+                'index': i + 1,
                 'vendor_name': string_decoding(base_info[i].vendor_name),
                 'model_name': string_decoding(base_info[i].model_name),
                 'sn': string_decoding(base_info[i].serial_number),
@@ -77,7 +78,7 @@ class DeviceManager(object):
         ip_info_list = []
         for i in range(dev_mum):
             if base_info_list[i].device_class == GxDeviceClassList.GEV:
-                status, ip_info = gx_get_device_ip_info(i+1)
+                status, ip_info = gx_get_device_ip_info(i + 1)
                 StatusProcessor.process(status, 'DeviceManager', '__get_ip_info')
                 ip_info_list.append(ip_info)
             else:
@@ -180,7 +181,8 @@ class DeviceManager(object):
             print("DeviceManager.open_device_by_index: index maximum: %s" % hex(UNSIGNED_INT_MAX).__str__())
             return None
 
-        access_mode_dict = dict((name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
+        access_mode_dict = dict(
+            (name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
         if access_mode not in access_mode_dict.values():
             print("DeviceManager.open_device_by_index: "
                   "access_mode out of bounds, %s" % access_mode_dict.__str__())
@@ -201,7 +203,7 @@ class DeviceManager(object):
         StatusProcessor.process(status, 'DeviceManager', 'open_device_by_index')
 
         # get device class
-        device_class = self.__device_info_list[index-1]["device_class"]
+        device_class = self.__device_info_list[index - 1]["device_class"]
 
         if device_class == GxDeviceClassList.U3V:
             return U3VDevice(handle)
@@ -244,7 +246,8 @@ class DeviceManager(object):
             raise ParameterTypeError("DeviceManager.open_device_by_sn: "
                                      "Expected access_mode type is int, not %s" % type(access_mode))
 
-        access_mode_dict = dict((name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
+        access_mode_dict = dict(
+            (name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
         if access_mode not in access_mode_dict.values():
             print("DeviceManager.open_device_by_sn: "
                   "access_mode out of bounds, %s" % access_mode_dict.__str__())
@@ -310,7 +313,8 @@ class DeviceManager(object):
             raise ParameterTypeError("DeviceManager.open_device_by_user_id: "
                                      "Expected access_mode type is int, not %s" % type(access_mode))
 
-        access_mode_dict = dict((name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
+        access_mode_dict = dict(
+            (name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
         if access_mode not in access_mode_dict.values():
             print("DeviceManager.open_device_by_user_id: access_mode out of bounds, %s" % access_mode_dict.__str__())
             return None
@@ -355,7 +359,8 @@ class DeviceManager(object):
             raise ParameterTypeError("DeviceManager.open_device_by_ip: "
                                      "Expected access_mode type is int, not %s" % type(access_mode))
 
-        access_mode_dict = dict((name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
+        access_mode_dict = dict(
+            (name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
         if access_mode not in access_mode_dict.values():
             print("DeviceManager.open_device_by_ip: access_mode out of bounds, %s" % access_mode_dict.__str__())
             return None
@@ -385,7 +390,8 @@ class DeviceManager(object):
             raise ParameterTypeError("DeviceManager.open_device_by_mac: "
                                      "Expected access_mode type is int, not %s" % type(access_mode))
 
-        access_mode_dict = dict((name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
+        access_mode_dict = dict(
+            (name, getattr(GxAccessMode, name)) for name in dir(GxAccessMode) if not name.startswith('__'))
         if access_mode not in access_mode_dict.values():
             print("DeviceManager.open_device_by_mac: access_mode out of bounds, %s" % access_mode_dict.__str__())
             return None
@@ -1048,7 +1054,8 @@ class Device:
         self.FactorySettingVersion = StringFeature(self.__dev_handle, GxFeatureID.STRING_FACTORY_SETTING_VERSION)
         self.DeviceUserID = StringFeature(self.__dev_handle, GxFeatureID.STRING_DEVICE_USER_ID)
         self.DeviceLinkSelector = IntFeature(self.__dev_handle, GxFeatureID.INT_DEVICE_LINK_SELECTOR)
-        self.DeviceLinkThroughputLimitMode = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_DEVICE_LINK_THROUGHPUT_LIMIT_MODE)
+        self.DeviceLinkThroughputLimitMode = EnumFeature(self.__dev_handle,
+                                                         GxFeatureID.ENUM_DEVICE_LINK_THROUGHPUT_LIMIT_MODE)
         self.DeviceLinkThroughputLimit = IntFeature(self.__dev_handle, GxFeatureID.INT_DEVICE_LINK_THROUGHPUT_LIMIT)
         self.DeviceLinkCurrentThroughput = IntFeature(self.__dev_handle, GxFeatureID.INT_DEVICE_LINK_CURRENT_THROUGHPUT)
         self.DeviceReset = CommandFeature(self.__dev_handle, GxFeatureID.COMMAND_DEVICE_RESET)
@@ -1080,7 +1087,8 @@ class Device:
         self.ReverseX = BoolFeature(self.__dev_handle, GxFeatureID.BOOL_REVERSE_X)
         self.ReverseY = BoolFeature(self.__dev_handle, GxFeatureID.BOOL_REVERSE_Y)
         self.TestPattern = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_TEST_PATTERN)
-        self.TestPatternGeneratorSelector = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_TEST_PATTERN_GENERATOR_SELECTOR)
+        self.TestPatternGeneratorSelector = EnumFeature(self.__dev_handle,
+                                                        GxFeatureID.ENUM_TEST_PATTERN_GENERATOR_SELECTOR)
         self.RegionSendMode = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_REGION_SEND_MODE)
         self.RegionMode = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_REGION_MODE)
         self.RegionSelector = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_REGION_SELECTOR)
@@ -1115,8 +1123,10 @@ class Device:
         self.FrameBufferOverwriteActive = BoolFeature(self.__dev_handle, GxFeatureID.BOOL_FRAMESTORE_COVER_ACTIVE)
         self.AcquisitionFrameRateMode = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_ACQUISITION_FRAME_RATE_MODE)
         self.AcquisitionFrameRate = FloatFeature(self.__dev_handle, GxFeatureID.FLOAT_ACQUISITION_FRAME_RATE)
-        self.CurrentAcquisitionFrameRate = FloatFeature(self.__dev_handle, GxFeatureID.FLOAT_CURRENT_ACQUISITION_FRAME_RATE)
-        self.FixedPatternNoiseCorrectMode = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_FIXED_PATTERN_NOISE_CORRECT_MODE)
+        self.CurrentAcquisitionFrameRate = FloatFeature(self.__dev_handle,
+                                                        GxFeatureID.FLOAT_CURRENT_ACQUISITION_FRAME_RATE)
+        self.FixedPatternNoiseCorrectMode = EnumFeature(self.__dev_handle,
+                                                        GxFeatureID.ENUM_FIXED_PATTERN_NOISE_CORRECT_MODE)
         self.AcquisitionBurstFrameCount = IntFeature(self.__dev_handle, GxFeatureID.INT_ACQUISITION_BURST_FRAME_COUNT)
         self.AcquisitionStatusSelector = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_ACQUISITION_STATUS_SELECTOR)
         self.AcquisitionStatus = BoolFeature(self.__dev_handle, GxFeatureID.BOOL_ACQUISITION_STATUS)
@@ -1198,23 +1208,32 @@ class Device:
         self.EventOverrun = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_OVERRUN)
         self.EventOverrunTimestamp = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_OVERRUN_TIMESTAMP)
         self.EventFrameStartOvertrigger = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAME_START_OVER_TRIGGER)
-        self.EventFrameStartOvertriggerTimestamp = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAME_START_OVER_TRIGGER_TIMESTAMP)
+        self.EventFrameStartOvertriggerTimestamp = IntFeature(self.__dev_handle,
+                                                              GxFeatureID.INT_EVENT_FRAME_START_OVER_TRIGGER_TIMESTAMP)
         self.EventBlockNotEmpty = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_BLOCK_NOT_EMPTY)
-        self.EventBlockNotEmptyTimestamp = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_BLOCK_NOT_EMPTY_TIMESTAMP)
+        self.EventBlockNotEmptyTimestamp = IntFeature(self.__dev_handle,
+                                                      GxFeatureID.INT_EVENT_BLOCK_NOT_EMPTY_TIMESTAMP)
         self.EventInternalError = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_INTERNAL_ERROR)
         self.EventInternalErrorTimestamp = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_INTERNAL_ERROR_TIMESTAMP)
-        self.EventFrameBurstStartOvertrigger = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMEBURSTSTART_OVERTRIGGER)
-        self.EventFrameBurstStartOvertriggerFrameID = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMEBURSTSTART_OVERTRIGGER_FRAMEID)
-        self.EventFrameBurstStartOvertriggerTimestamp = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMEBURSTSTART_OVERTRIGGER_TIMESTAMP)
+        self.EventFrameBurstStartOvertrigger = IntFeature(self.__dev_handle,
+                                                          GxFeatureID.INT_EVENT_FRAMEBURSTSTART_OVERTRIGGER)
+        self.EventFrameBurstStartOvertriggerFrameID = IntFeature(self.__dev_handle,
+                                                                 GxFeatureID.INT_EVENT_FRAMEBURSTSTART_OVERTRIGGER_FRAMEID)
+        self.EventFrameBurstStartOvertriggerTimestamp = IntFeature(self.__dev_handle,
+                                                                   GxFeatureID.INT_EVENT_FRAMEBURSTSTART_OVERTRIGGER_TIMESTAMP)
         self.EventFrameStartWait = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMESTART_WAIT)
-        self.EventFrameStartWaitTimestamp = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMESTART_WAIT_TIMESTAMP)
+        self.EventFrameStartWaitTimestamp = IntFeature(self.__dev_handle,
+                                                       GxFeatureID.INT_EVENT_FRAMESTART_WAIT_TIMESTAMP)
         self.EventFrameBurstStartWait = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMEBURSTSTART_WAIT)
-        self.EventFrameBurstStartWaitTimestamp = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMEBURSTSTART_WAIT_TIMESTAMP)
+        self.EventFrameBurstStartWaitTimestamp = IntFeature(self.__dev_handle,
+                                                            GxFeatureID.INT_EVENT_FRAMEBURSTSTART_WAIT_TIMESTAMP)
         self.EventBlockDiscardFrameID = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_BLOCK_DISCARD_FRAMEID)
-        self.EventFrameStartOvertriggerFrameID = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMESTART_OVERTRIGGER_FRAMEID)
+        self.EventFrameStartOvertriggerFrameID = IntFeature(self.__dev_handle,
+                                                            GxFeatureID.INT_EVENT_FRAMESTART_OVERTRIGGER_FRAMEID)
         self.EventBlockNotEmptyFrameID = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_BLOCK_NOT_EMPTY_FRAMEID)
         self.EventFrameStartWaitFrameID = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMESTART_WAIT_FRAMEID)
-        self.EventFrameBurstStartWaitFrameID = IntFeature(self.__dev_handle, GxFeatureID.INT_EVENT_FRAMEBURSTSTART_WAIT_FRAMEID)
+        self.EventFrameBurstStartWaitFrameID = IntFeature(self.__dev_handle,
+                                                          GxFeatureID.INT_EVENT_FRAMEBURSTSTART_WAIT_FRAMEID)
 
         # ---------------LUT Section------------------------------------------
         self.LUTSelector = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_LUT_SELECTOR)
@@ -1231,7 +1250,8 @@ class Device:
         # ---------------Color Transformation Control-------------------------
         self.ColorTransformationMode = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_COLOR_TRANSFORMATION_MODE)
         self.ColorTransformationEnable = BoolFeature(self.__dev_handle, GxFeatureID.BOOL_COLOR_TRANSFORMATION_ENABLE)
-        self.ColorTransformationValueSelector = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_COLOR_TRANSFORMATION_VALUE_SELECTOR)
+        self.ColorTransformationValueSelector = EnumFeature(self.__dev_handle,
+                                                            GxFeatureID.ENUM_COLOR_TRANSFORMATION_VALUE_SELECTOR)
         self.ColorTransformationValue = FloatFeature(self.__dev_handle, GxFeatureID.FLOAT_COLOR_TRANSFORMATION_VALUE)
         self.SaturationMode = EnumFeature(self.__dev_handle, GxFeatureID.ENUM_SATURATION_MODE)
         self.Saturation = IntFeature(self.__dev_handle, GxFeatureID.INT_SATURATION)
@@ -1327,10 +1347,10 @@ class Device:
             raise ParameterTypeError("Device.register_device_offline_callback: "
                                      "Expected callback type is function not %s" % type(callback_func))
 
-        status, offline_callback_handle = gx_register_device_offline_callback\
+        status, offline_callback_handle = gx_register_device_offline_callback \
             (self.__dev_handle, self.__c_offline_callback)
         StatusProcessor.process(status, 'Device', 'register_device_offline_callback')
-        
+
         # callback will not recorded when register callback failed.
         self.__py_offline_callback = callback_func
         self.__offline_callback_handle = offline_callback_handle
@@ -1398,9 +1418,12 @@ class GEVDevice(Device):
     def __init__(self, handle):
         self.__dev_handle = handle
         Device.__init__(self, self.__dev_handle)
-        self.GevCurrentIPConfigurationLLA = BoolFeature(self.__dev_handle, GxFeatureID.BOOL_GEV_CURRENT_IP_CONFIGURATION_LLA)
-        self.GevCurrentIPConfigurationDHCP = BoolFeature(self.__dev_handle, GxFeatureID.BOOL_GEV_CURRENT_IP_CONFIGURATION_DHCP)
-        self.GevCurrentIPConfigurationPersistentIP = BoolFeature(self.__dev_handle, GxFeatureID.BOOL_GEV_CURRENT_IP_CONFIGURATION_PERSISTENT_IP)
+        self.GevCurrentIPConfigurationLLA = BoolFeature(self.__dev_handle,
+                                                        GxFeatureID.BOOL_GEV_CURRENT_IP_CONFIGURATION_LLA)
+        self.GevCurrentIPConfigurationDHCP = BoolFeature(self.__dev_handle,
+                                                         GxFeatureID.BOOL_GEV_CURRENT_IP_CONFIGURATION_DHCP)
+        self.GevCurrentIPConfigurationPersistentIP = BoolFeature(self.__dev_handle,
+                                                                 GxFeatureID.BOOL_GEV_CURRENT_IP_CONFIGURATION_PERSISTENT_IP)
         self.EstimatedBandwidth = IntFeature(self.__dev_handle, GxFeatureID.INT_ESTIMATED_BANDWIDTH)
         self.GevHeartbeatTimeout = IntFeature(self.__dev_handle, GxFeatureID.INT_GEV_HEARTBEAT_TIMEOUT)
         self.GevSCPSPacketSize = IntFeature(self.__dev_handle, GxFeatureID.INT_GEV_PACKET_SIZE)
@@ -1416,6 +1439,7 @@ class U3VDevice(Device):
     The U3VDevice class inherits from the Device class. In addition to inheriting the properties of the Device,
     the U3V Device has special attributes such as bandwidth limitation, URBSetting, frame info, etc.
     """
+
     def __init__(self, handle):
         self.__dev_handle = handle
         Device.__init__(self, self.__dev_handle)
@@ -1426,6 +1450,7 @@ class U2Device(Device):
     """
     The U2Device class inherits from the Device class
     """
+
     def __init__(self, handle):
         self.__dev_handle = handle
         Device.__init__(self, self.__dev_handle)
@@ -1449,7 +1474,7 @@ class U2Device(Device):
 class DataStream:
     def __init__(self, handle):
         self.__dev_handle = handle
-        
+
         self.__c_capture_callback = CAP_CALL(self.__on_capture_callback)
         self.__py_capture_callback = None
 
@@ -1599,6 +1624,7 @@ class UnexpectedError(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1609,6 +1635,7 @@ class NotFoundTL(Exception):
     param:  args             exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1619,6 +1646,7 @@ class NotFoundDevice(Exception):
     param:  args              exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1629,6 +1657,7 @@ class OffLine(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1639,6 +1668,7 @@ class InvalidParameter(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1649,6 +1679,7 @@ class InvalidHandle(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1659,6 +1690,7 @@ class InvalidCall(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1669,6 +1701,7 @@ class InvalidAccess(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1679,6 +1712,7 @@ class NeedMoreBuffer(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1689,6 +1723,7 @@ class FeatureTypeError(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1699,6 +1734,7 @@ class OutOfRange(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1709,6 +1745,7 @@ class NotInitApi(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1719,6 +1756,7 @@ class Timeout(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1729,6 +1767,7 @@ class ParameterTypeError(Exception):
     param:  args            exception description
     return: none
     """
+
     def __init__(self, args):
         Exception.__init__(self, args)
 
@@ -1818,7 +1857,8 @@ class RGBImage:
             self.__image_array = (c_ubyte * self.frame_data.image_size)()
             self.frame_data.image_buf = addressof(self.__image_array)
 
-    def image_improvement(self, color_correction_param=0, contrast_lut=None, gamma_lut=None, channel_order=DxRGBChannelOrder.ORDER_RGB):
+    def image_improvement(self, color_correction_param=0, contrast_lut=None, gamma_lut=None,
+                          channel_order=DxRGBChannelOrder.ORDER_RGB):
         """
         :brief:     Improve image quality of the object itself
         :param      color_correction_param:     color correction param address
@@ -1849,15 +1889,16 @@ class RGBImage:
 
         if not isinstance(color_correction_param, INT_TYPE):
             raise ParameterTypeError("RGBImage.image_improvement: "
-                                     "Expected color_correction_param type is int, not %s" % type(color_correction_param))
+                                     "Expected color_correction_param type is int, not %s" % type(
+                color_correction_param))
 
         if not isinstance(channel_order, INT_TYPE):
             raise ParameterTypeError("RGBImage.image_improvement: "
                                      "Expected channel_order type is int, not %s" % type(channel_order))
 
         status = dx_image_improvement_ex(self.frame_data.image_buf, self.frame_data.image_buf,
-                                      self.frame_data.width, self.frame_data.height,
-                                      color_correction_param, contrast_parameter, gamma_parameter, channel_order)
+                                         self.frame_data.width, self.frame_data.height,
+                                         color_correction_param, contrast_parameter, gamma_parameter, channel_order)
 
         if status != DxStatus.OK:
             raise UnexpectedError("RGBImage.image_improvement: failed, error code:%s" % hex(status).__str__())
@@ -1930,7 +1971,8 @@ class RGBImage:
                     objective "white" area,or input image is white area.
         :return:    rgb_ratio:      (r_ratio, g_ratio, b_ratio)
         """
-        status, rgb_ratio = dx_get_white_balance_ratio(self.frame_data.image_buf, self.frame_data.width, self.frame_data.height)
+        status, rgb_ratio = dx_get_white_balance_ratio(self.frame_data.image_buf, self.frame_data.width,
+                                                       self.frame_data.height)
 
         if status != DxStatus.OK:
             raise UnexpectedError("RGBImage.get_white_balance_ratio: failed, error code:%s" % hex(status).__str__())
@@ -1942,7 +1984,8 @@ class RGBImage:
         :brief:     Return data as a numpy.Array type with dimension Image.height * Image.width * 3
         :return:    numpy.Array objects
         """
-        image_np = numpy.frombuffer(self.__image_array, dtype=numpy.ubyte).reshape(self.frame_data.height, self.frame_data.width, 3)
+        image_np = numpy.frombuffer(self.__image_array, dtype=numpy.ubyte).reshape(self.frame_data.height,
+                                                                                   self.frame_data.width, 3)
         return image_np
 
     def get_image_size(self):
@@ -1962,7 +2005,6 @@ class RawImage:
         else:
             self.__image_array = (c_ubyte * self.frame_data.image_size)()
             self.frame_data.image_buf = addressof(self.__image_array)
-
 
     def __pixel_format_raw16_to_raw8(self, pixel_format):
         """
@@ -2083,8 +2125,8 @@ class RawImage:
         image_rgb = RGBImage(frame_data)
 
         status = dx_raw8_to_rgb24_ex(raw8_image.frame_data.image_buf, image_rgb.frame_data.image_buf,
-                                  raw8_image.frame_data.width, raw8_image.frame_data.height,
-                                  convert_type, pixel_color_filter, flip, channel_order)
+                                     raw8_image.frame_data.width, raw8_image.frame_data.height,
+                                     convert_type, pixel_color_filter, flip, channel_order)
 
         if status != DxStatus.OK:
             raise UnexpectedError("RawImage.convert: failed, error code:%s" % hex(status).__str__())
@@ -2111,19 +2153,19 @@ class RawImage:
             return GxPixelFormatEntry.MONO8
 
         if (pixel_format == GxPixelFormatEntry.BAYER_GR8 and direct == 90) or \
-            (pixel_format == GxPixelFormatEntry.BAYER_GB8 and direct == -90):
+                (pixel_format == GxPixelFormatEntry.BAYER_GB8 and direct == -90):
             return GxPixelFormatEntry.BAYER_BG8
 
         if (pixel_format == GxPixelFormatEntry.BAYER_RG8 and direct == 90) or \
-            (pixel_format == GxPixelFormatEntry.BAYER_BG8 and direct == -90):
+                (pixel_format == GxPixelFormatEntry.BAYER_BG8 and direct == -90):
             return GxPixelFormatEntry.BAYER_GR8
 
         if (pixel_format == GxPixelFormatEntry.BAYER_GB8 and direct == 90) or \
-            (pixel_format == GxPixelFormatEntry.BAYER_GR8 and direct == -90):
+                (pixel_format == GxPixelFormatEntry.BAYER_GR8 and direct == -90):
             return GxPixelFormatEntry.BAYER_RG8
 
         if (pixel_format == GxPixelFormatEntry.BAYER_BG8 and direct == 90) or \
-            (pixel_format == GxPixelFormatEntry.BAYER_RG8 and direct == -90):
+                (pixel_format == GxPixelFormatEntry.BAYER_RG8 and direct == -90):
             return GxPixelFormatEntry.BAYER_GB8
 
         return -1
@@ -2219,7 +2261,7 @@ class RawImage:
         pixel_color_filter = _InterUtility.get_pixel_color_filter(self.frame_data.pixel_format)
 
         if pixel_bit_depth < GxPixelSizeEntry.BPP8 or \
-           pixel_bit_depth > GxPixelSizeEntry.BPP12:
+                pixel_bit_depth > GxPixelSizeEntry.BPP12:
             print("RawImage.convert: This pixel format is not support")
             return None
 
@@ -2314,7 +2356,7 @@ class RawImage:
         rotate_image = RawImage(frame_data)
 
         status = dx_raw8_rotate_90_ccw(self.frame_data.image_buf, rotate_image.frame_data.image_buf,
-                                     self.frame_data.width, self.frame_data.height)
+                                       self.frame_data.width, self.frame_data.height)
 
         if status != DxStatus.OK:
             raise UnexpectedError("RawImage.raw8_rotate_90_ccw: failed, error code:%s" % hex(status).__str__())
@@ -2474,7 +2516,7 @@ class RawImage:
         """
         if dark_img is not None:
             _InterUtility.check_type(dark_img, RawImage, "dark_img", "Utility", "get_ffc_coefficients")
-        
+
         if target_value is not None:
             _InterUtility.check_type(target_value, INT_TYPE, "target_value", "Utility", "get_ffc_coefficients")
 
@@ -2537,10 +2579,10 @@ class RawImage:
         image_size = self.frame_data.width * self.frame_data.height
 
         if self.frame_data.pixel_format & PIXEL_BIT_MASK == GX_PIXEL_8BIT:
-            image_np = numpy.frombuffer(self.__image_array, dtype=numpy.ubyte, count=image_size).\
+            image_np = numpy.frombuffer(self.__image_array, dtype=numpy.ubyte, count=image_size). \
                 reshape(self.frame_data.height, self.frame_data.width)
         elif self.frame_data.pixel_format & PIXEL_BIT_MASK == GX_PIXEL_16BIT:
-            image_np = numpy.frombuffer(self.__image_array, dtype=numpy.uint16, count=image_size).\
+            image_np = numpy.frombuffer(self.__image_array, dtype=numpy.uint16, count=image_size). \
                 reshape(self.frame_data.height, self.frame_data.width)
         else:
             image_np = None

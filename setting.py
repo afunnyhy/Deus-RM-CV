@@ -14,7 +14,7 @@ origin_gimbal_new_sb_up = np.array([0, 0.04902, -0.08932])
 origin_gimbal_new_sb_down = np.array([0, -0.04509, -0.18435])
 
 # 新步兵相机上置
-origin_gimbal_bb_up = np.array([0, 0.05052, -0.16674])
+origin_gimbal_bb_up = np.array([0, -0.04959, -0.17185])
 
 # 新英雄相机下置
 origin_gimbal_yx_down = np.array([0, -0.0563, -0.23985])
@@ -47,7 +47,7 @@ haikang_2_dist_coefficients = np.array([-0.0451, 0.4553, -1.4647e-4, 9.4951e-4, 
 
 # 模型参数--------------------------------------------------------------------------------------------------------
 model_path = "./weight/"
-model_name = "20250318_normal"
+model_name = "20250318_normal_dynamic"
 
 # CV提点参数------------------------------------------------------------------------------------------------------
 # CV提点后微小修正灯条角点位置,延长或缩小的百分比
@@ -57,7 +57,7 @@ recorrect_pixel = 0.92
 # 重力加速度
 g = 9.79460
 # 默认初始弹速(m/s)
-defaults_bullet_speed = 25
+defaults_bullet_speed = 23
 # yaw动态时补偿参数t0,由不同机器人暴力测试得出
 t0 = {
     TroopType.SENTINEL: 0.5,  # 哨兵的yaw运动参数
@@ -67,9 +67,9 @@ t0 = {
 
 # 对局需要手动设置的重要参数------------------------------------------------------------------------------------------
 # 我方颜色,后根据通信自动设置
-friend_color = Color.BLUE
+friend_color = Color.RED
 # 我方兵种 (哨兵SENTINEL 英雄HERO 步兵INFANTRY)
-my_TroopType = TroopType.INFANTRY
+my_TroopType = TroopType.SENTINEL
 
 # 调试参数--------------------------------------------------------------------------------------------------------
 # 保存视频的时间，单位: 秒，0表示不保存
@@ -89,12 +89,12 @@ if my_TroopType == TroopType.HERO:
 # 自动选择相机
 cameraID = CameraID.HAIKANG_2  # 相机ID
 if my_TroopType == TroopType.INFANTRY:  # 步兵用海康2相机
-    cameraID = CameraID.HAIKANG_2
+    cameraID = CameraID.HAIKANG_1
 elif my_TroopType == TroopType.HERO:  # 英雄用海康1相机
     cameraID = CameraID.HAIKANG_1
 elif my_TroopType == TroopType.SENTINEL:  # 哨兵用大恒相机
     cameraID = CameraID.DAHENG_0
-# cameraID = CameraID.HAIKANG_1  # 强制选择相机ID
+# cameraID = CameraID.HAIKANG_1 # 强制选择相机ID
 
 # 自动选择平移向量
 origin_gimbal = origin_gimbal_bb_up
@@ -109,7 +109,7 @@ elif my_TroopType == TroopType.SENTINEL:  # 哨兵
 
 # 自动配置相机翻转
 camera_flip = False  # 相机翻转
-if my_TroopType in [TroopType.INFANTRY, TroopType.HERO, TroopType.SENTINEL]:
+if my_TroopType in [TroopType.SENTINEL]:
     camera_flip = True
 # camera_flip = False  # 强制选择相机翻转
 
@@ -129,6 +129,3 @@ elif cameraID == CameraID.HAIKANG_2:  # 海康相机2
     camera_matrix = haikang_2_camera_matrix
     dist_coefficients = haikang_2_dist_coefficients
     cameraType = CameraType.HAIKANG
-
-# 自动配置yaw运动参数t0
-t0 = t0[my_TroopType]

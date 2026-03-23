@@ -3,11 +3,11 @@ import os
 import sys
 import onnxruntime as ort
 import cv2
-from chase_sender import *
 import torch
 import numpy as np
 import time
 import math
+from collections import deque
 import subprocess
 import threading
 import serial
@@ -27,6 +27,69 @@ from light_detector import LightDetector  # 导入灯条解算类
 from armor_chose import TargetSelector  # 导入目标选择类
 from pnp_solver import PnPSolver  # 导入PnP解算类
 
+WINDOW_SECONDS = 8
+DISPLAY_FPS = 20
+buffers = {
+    "ch1": deque(),
+    "ch2": deque(),
+    "ch3": deque(),
+    "ch4": deque(),
+}
+buffer_lock = threading.Lock()
+
+
+# ========================
+# 示波器线程
+# ========================
+def oscilloscope():
+    plt.ion()
+    fig, ax = plt.subplots()
+    while True:
+        now = time.time()
+        t_min = now - WINDOW_SECONDS
+
+        with buffer_lock:
+            for buf in buffers.values():
+                while buf and buf[0][0] < t_min:
+                    buf.popleft()
+
+            ch1 = list(buffers["ch1"])
+            ch2 = list(buffers["ch2"])
+            ch3 = list(buffers["ch3"])
+            ch4 = list(buffers["ch4"])
+
+        ax.clear()
+
+        if ch1:
+            t1, v1 = zip(*ch1)
+            x1 = [t - now for t in t1]
+            ax.plot(x1, v1, label="receive_pitch")
+
+        if ch2:
+            t2, v2 = zip(*ch2)
+            x2 = [t - now for t in t2]
+            ax.plot(x2, v2, label="send_pitch")
+
+        if ch3:
+            t3, v3 = zip(*ch3)
+            x3 = [t - now for t in t3]
+            ax.plot(x3, v3, label="receive_yaw")
+        if ch4:
+            t4, v4 = zip(*ch4)
+            x4 = [t - now for t in t4]
+            ax.plot(x4, v4, label="send_yaw")
+
+        ax.set_xlim(-WINDOW_SECONDS, 0)
+        ax.set_ylim(-180, 180)
+        ax.set_title("Oscilloscope")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Amplitude")
+        ax.legend()
+        ax.grid(True)
+
+        plt.pause(1.0 / DISPLAY_FPS)
+
+
 # from exceptiongroup import catch
 
 CUDA = True
@@ -34,7 +97,6 @@ USE_OAK = False
 USE_DH = True
 FPS_TIME = 3
 ROTATE = True
-# is_show_video=False
 
 ROOT = os.getcwd()
 if str(ROOT) not in sys.path:
@@ -46,7 +108,6 @@ TIMEOUT = 5
 
 # communication
 vision = VisionData_t(PORT, BPS, TIMEOUT)
-sender = EnemyVisionSender(target_ip="192.168.1.5", target_port=8964)
 
 # 初始化3D绘图
 if is_show_3d:
@@ -139,6 +200,7 @@ def run():
     predicted_armor_yaw = 0
 
     print("Start working...")
+    t0 = time.time()
     while True:
         # 读取视频流的一帧
         ret, orig_frame = camera.get_photo()
@@ -247,9 +309,13 @@ def run():
             angle_yoz = - (change_angle - angle_pitch)
             angle_yoz = angle_pitch + angle_yoz
 
+            # 补丁
+            diff = - (change_angle - angle_pitch)
+            angle_yoz = angle_yoz - diff + 0.5 * diff
+
             if az < 0.1:  # 距离过近
                 continue
-            angle_xoz = math.atan(ax / az) + vision.yaw
+            angle_xoz = math.atan(ax / az) * 0.5 + vision.yaw
             while angle_xoz < -math.pi:
                 angle_xoz += 2 * math.pi
             while angle_xoz > math.pi:
@@ -259,14 +325,23 @@ def run():
             if str(angle_xoz) == "nan":
                 continue
             lock = 0
-            if max(abs(angle_xoz - vision.yaw), abs(angle_yoz)) > 1.0 * math.pi / 180:
+            if max(abs(angle_xoz - vision.yaw), abs(angle_yoz - vision.pitch)) > 0.8 * math.pi / 180:
                 lock = 0
             else:
                 lock = 1
+            vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, lock)
+            now = time.time()
+            dt = now - t0
 
-            vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, lock)  # 发给电控
-            sender.update_data(is_detected=True, rel_x=az, rel_y=ax)  # 发给导航
-
+            v1 = vision.pitch * 180 / math.pi
+            v2 = angle_yoz * 180 / math.pi
+            v3 = vision.yaw * 180 / math.pi
+            v4 = angle_xoz * 180 / math.pi
+            with buffer_lock:
+                buffers["ch1"].append((now, v1))
+                buffers["ch2"].append((now, v2))
+                buffers["ch3"].append((now, v3))
+                buffers["ch4"].append((now, v4))
             # 标记显示预测后的装甲板
             # predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
             # cv2.circle(out_img, predicted_pos2d, 14, (174, 29, 128), 4)
@@ -277,9 +352,13 @@ def run():
             # print(f"yaw旋转到{angle_xoz * 180 / math.pi}°,pitch旋转{angle_yoz * 180 / math.pi}°")
             # vision.send()
         else:
-            vision.set_data(vision.yaw, 0, 0, 0, 0)  # 发给电控
-            sender.update_data(is_detected=False, rel_x=0, rel_y=0)  # 发给导航
-
+            vision.set_data(vision.yaw, 0, 0, 0, 0)
+            v1 = vision.pitch * 180 / math.pi
+            v3 = vision.yaw * 180 / math.pi
+            now = time.time()
+            with buffer_lock:
+                buffers["ch1"].append((now, v1))
+                buffers["ch3"].append((now, v3))
         # cv2.putText(out_img,
         #             f"received pitch:{(vision.pitch * 180 / math.pi) if vision.pitch is not None else 0:<9.3f} yaw:{(vision.yaw * 180 / math.pi) if vision.yaw is not None else 0:<9.3f} ",
         #             (50, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
@@ -312,7 +391,8 @@ def run():
 if __name__ == "__main__":
     t1 = threading.Thread(target=vision.start)
     t2 = threading.Thread(target=run)
+    osc_thread = threading.Thread(target=oscilloscope)
     t1.start()
     t2.start()
-    sender.start(hz=50.0)
+    # osc_thread.start()
     # run()

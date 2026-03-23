@@ -109,11 +109,11 @@ def run(video_path):
     if not ret:
         print("Error: Unable to open video file:", video_path)
         return
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 视频编码器（MP4格式）
+    # fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 视频编码器（MP4格式）
     fps = 30  # 帧率
     ret, orig_frame = cap.read()
     frame_size = (orig_frame.shape[1], orig_frame.shape[0])  # 视频帧大小（宽度, 高度）
-    video_writer = cv2.VideoWriter(output_file, fourcc, fps, frame_size)
+    # video_writer = cv2.VideoWriter(output_file, fourcc, fps, frame_size)
     if used_yolo:
         # 初始化模型推断类
         armor_de = ArmorDetector(model_path, model_name, CUDA, test_color, ".engine")  # 我方颜色
@@ -140,17 +140,22 @@ def run(video_path):
     print("Start processing...")
     while True:
         # 读取视频流的一帧
+
         ret, orig_frame = cap.read()
         # orig_frame = cv2.flip(orig_frame, -1)
         if not ret:
-            video_writer.release()
+            # video_writer.release()
             cap.release()
             cv2.destroyAllWindows()
             print("video write to", output_file, "over")
             break
         detected_point = []  # 初始化装甲板中心点结果列表
+
+        start = time.time()
         if used_yolo:
             all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
+            # while True:
+            #     all_detect_armor, out_img = armor_de.detect_armor(cv2.imread("./test_data/photo/image_20250317_172436.jpg"))
         else:
             ret, all_detect_armor, out_img = armor_de.get_armors_by_img(orig_frame)
         # print(tra.state)
@@ -259,26 +264,31 @@ def run(video_path):
         cv2.putText(out_img, f"state:{tra.state}", (50, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 150, 0), 2)
 
-        video_writer.write(out_img)
+        # video_writer.write(out_img)
         if is_show_video:
             cv2.imshow("vision output", out_img)
             cv2.waitKey(1)
 
         cnt += 1
-        if cnt == 20:
-            fps = 20 / (time.time() - time1)
+        if cnt == 10:
+            fps = 10 / (time.time() - time1)
             time1 = time.time()
             cnt = 0
             print("fps", fps)
 
 
 if __name__ == "__main__":
-    # 根据视频文件名自动选择颜色，文件名中包含"red"或"blue"
-    run(video_path=r"./test_data/0325blue.mp4")
-    # run(video_path=r"./test_data/small_blue.avi")
-    # run(video_path=r"./test_data/small_red.avi")
-    # run(video_path=r"./test_data/big_red.avi")
-    # run(video_path=r"./test_data/big_blue.avi")
-    # run(video_path="./test_data/0323blue1.mp4")
-    # run(video_path="./test_data/0323blue2.mp4")
-    # run(video_path=r"./test_data/0325blue.mp4")
+    count_time = 900  # 15mins
+    is_show_video = False
+    while count_time > 0:
+        print("test remains (s): ", count_time)
+        start_count = time.time()
+        run(video_path=r"./test_data/0325blue.mp4")
+        run(video_path=r"./test_data/small_blue.avi")
+        run(video_path=r"./test_data/small_red.avi")
+        run(video_path=r"./test_data/big_red.avi")
+        run(video_path=r"./test_data/big_blue.avi")
+        run(video_path="./test_data/0323blue1.mp4")
+        run(video_path="./test_data/0323blue2.mp4")
+        run(video_path=r"./test_data/0325blue.mp4")
+        count_time -= (time.time() - start_count)

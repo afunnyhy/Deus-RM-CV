@@ -5,7 +5,6 @@
 from gxipy.gxiapi import *
 from gxipy.gxidef import *
 
-
 __all__ = ["gxwrapper", "dxwrapper", "gxiapi", "gxidef"]
 
 __version__ = '2.0.2105.9261'

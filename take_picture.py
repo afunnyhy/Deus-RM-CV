@@ -3,11 +3,11 @@ import os
 import sys
 import onnxruntime as ort
 import cv2
-from chase_sender import *
 import torch
 import numpy as np
 import time
 import math
+from collections import deque
 import subprocess
 import threading
 import serial
@@ -27,6 +27,63 @@ from light_detector import LightDetector  # 导入灯条解算类
 from armor_chose import TargetSelector  # 导入目标选择类
 from pnp_solver import PnPSolver  # 导入PnP解算类
 
+WINDOW_SECONDS = 8
+DISPLAY_FPS = 20
+buffers = {
+    "ch1": deque(),
+    "ch2": deque(),
+    "ch3": deque(),
+}
+buffer_lock = threading.Lock()
+
+
+# ========================
+# 示波器线程
+# ========================
+def oscilloscope():
+    plt.ion()
+    fig, ax = plt.subplots()
+    while True:
+        now = time.time()
+        t_min = now - WINDOW_SECONDS
+
+        with buffer_lock:
+            for buf in buffers.values():
+                while buf and buf[0][0] < t_min:
+                    buf.popleft()
+
+            ch1 = list(buffers["ch1"])
+            ch2 = list(buffers["ch2"])
+            ch3 = list(buffers["ch3"])
+
+        ax.clear()
+
+        if ch1:
+            t1, v1 = zip(*ch1)
+            x1 = [t - now for t in t1]
+            ax.plot(x1, v1, label="receive")
+
+        if ch2:
+            t2, v2 = zip(*ch2)
+            x2 = [t - now for t in t2]
+            ax.plot(x2, v2, label="send")
+
+        if ch3:
+            t3, v3 = zip(*ch3)
+            x3 = [t - now for t in t3]
+            ax.plot(x3, v3, label="old_diff")
+
+        ax.set_xlim(-WINDOW_SECONDS, 0)
+        ax.set_ylim(-25, 0)
+        ax.set_title("Dual-Channel Oscilloscope")
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Amplitude")
+        ax.legend()
+        ax.grid(True)
+
+        plt.pause(1.0 / DISPLAY_FPS)
+
+
 # from exceptiongroup import catch
 
 CUDA = True
@@ -34,7 +91,6 @@ USE_OAK = False
 USE_DH = True
 FPS_TIME = 3
 ROTATE = True
-# is_show_video=False
 
 ROOT = os.getcwd()
 if str(ROOT) not in sys.path:
@@ -46,7 +102,6 @@ TIMEOUT = 5
 
 # communication
 vision = VisionData_t(PORT, BPS, TIMEOUT)
-sender = EnemyVisionSender(target_ip="192.168.1.5", target_port=8964)
 
 # 初始化3D绘图
 if is_show_3d:
@@ -139,6 +194,7 @@ def run():
     predicted_armor_yaw = 0
 
     print("Start working...")
+    t0 = time.time()
     while True:
         # 读取视频流的一帧
         ret, orig_frame = camera.get_photo()
@@ -169,10 +225,6 @@ def run():
                 if ret_pnp:  # 如果PnP解算成功, 将装甲板中心点添加到结果列表
                     detected_point.append(armor)
 
-        cv2.putText(out_img,
-                    f"receive yaw:{vision.yaw * 180 / math.pi:<9.3f} pitch:{vision.pitch * 180 / math.pi:<9.3f} ",
-                    (50, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
-
         if len(detected_point) > 0:
             # 选择最佳目标
             armor = target_selector.select_best_target(detected_point)
@@ -185,10 +237,6 @@ def run():
                 found_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
             cv2.circle(out_img, found_pos2d, 11, (0, 200, 200), 4)
             ax, ay, az = armor.gimbal_pos
-
-            cv2.putText(out_img,
-                        f"detecting x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{armor.yaw * 180.0 / math.pi:<9.3f}",
-                        (50, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
 
             is_find = True
             # print(armor)
@@ -247,6 +295,10 @@ def run():
             angle_yoz = - (change_angle - angle_pitch)
             angle_yoz = angle_pitch + angle_yoz
 
+            # 补丁
+            diff = - (change_angle - angle_pitch)
+            angle_yoz = angle_yoz - diff + 0.25 * diff
+
             if az < 0.1:  # 距离过近
                 continue
             angle_xoz = math.atan(ax / az) + vision.yaw
@@ -260,39 +312,55 @@ def run():
                 continue
             lock = 0
             if max(abs(angle_xoz - vision.yaw), abs(angle_yoz)) > 1.0 * math.pi / 180:
+                vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, 0)
                 lock = 0
             else:
+                vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, 1)
                 lock = 1
-
-            vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, lock)  # 发给电控
-            sender.update_data(is_detected=True, rel_x=az, rel_y=ax)  # 发给导航
-
+            now = time.time()
+            dt = now - t0
+            v1 = vision.pitch * 180 / math.pi
+            v2 = angle_yoz * 180 / math.pi
+            v3 = - (change_angle - angle_pitch) * 180 / math.pi
+            with buffer_lock:
+                buffers["ch1"].append((now, v1))
+                buffers["ch2"].append((now, v2))
+                buffers["ch3"].append((now, v3))
             # 标记显示预测后的装甲板
             # predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
             # cv2.circle(out_img, predicted_pos2d, 14, (174, 29, 128), 4)
 
-            cv2.putText(out_img,
-                        f"sending yaw:{angle_xoz * 180 / math.pi:<9.3f} pitch :{angle_yoz * 180 / math.pi:<9.3f} lock:{lock}",
-                        (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
             # print(f"yaw旋转到{angle_xoz * 180 / math.pi}°,pitch旋转{angle_yoz * 180 / math.pi}°")
             # vision.send()
         else:
-            vision.set_data(vision.yaw, 0, 0, 0, 0)  # 发给电控
-            sender.update_data(is_detected=False, rel_x=0, rel_y=0)  # 发给导航
-
+            vision.set_data(vision.yaw, 0, 0, 0, 0)
         # cv2.putText(out_img,
         #             f"received pitch:{(vision.pitch * 180 / math.pi) if vision.pitch is not None else 0:<9.3f} yaw:{(vision.yaw * 180 / math.pi) if vision.yaw is not None else 0:<9.3f} ",
         #             (50, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
 
-        cv2.putText(out_img, f"state:{tra.state},cmid:{vision.CmdID}", (50, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 150, 0), 2)
         if save_video_time > 0:
             video_writer.write(out_img)
 
         # 显示图像和FPS计算
         if is_show_video:
+            # 缩放用于显示的图像（out_img 带有调试信息）
             small_img = cv2.resize(out_img, (0, 0), fx=0.75, fy=0.75, interpolation=cv2.INTER_AREA)
             cv2.imshow("vision output", small_img)
+
+            # --- 新增：干净的拍照功能 ---
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('s'):  # 按下 's' 键拍照
+                # 使用时间戳命名
+                photo_time = time.strftime("%Y%m%d_%H%M%S")
+                photo_name = f"raw_capture_{photo_time}.jpg"
+
+                # 【关键点】：这里保存的是 orig_frame 而不是 out_img
+                # 如果你在循环开始处对 orig_frame 做了 flip，这里保存的就是翻转后但无文字的图
+                cv2.imwrite(photo_name, orig_frame)
+                print(f"--- 原始照片（无参数）已保存: {photo_name} ---")
+
+            elif key == ord('q'):
+                break
             cv2.waitKey(1)
         cnt += 1
         if cnt == 20:
@@ -312,7 +380,8 @@ def run():
 if __name__ == "__main__":
     t1 = threading.Thread(target=vision.start)
     t2 = threading.Thread(target=run)
+    osc_thread = threading.Thread(target=oscilloscope)
     t1.start()
     t2.start()
-    sender.start(hz=50.0)
+    osc_thread.start()
     # run()

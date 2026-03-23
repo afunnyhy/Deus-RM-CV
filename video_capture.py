@@ -4,7 +4,7 @@ from camera_get_photo import InitCamera
 from setting import *
 
 
-def video_capture(capture_time=30):
+def video_capture(capture_time=10000000000000):
     """
     视频采集函数
     :param capture_time: 采集时间，单位秒，默认30秒
@@ -41,4 +41,4 @@ def video_capture(capture_time=30):
 
 
 if __name__ == "__main__":
-    video_capture(capture_time=30)
+    video_capture(capture_time=1000000000)

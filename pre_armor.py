@@ -5,6 +5,7 @@ from all_type import TracState
 from extended_kalman_filter import ExtendedKalmanFilter
 from setting import used_predict
 
+
 # LOST 丢失
 # DETECTING 检测中
 # TRACKING 追踪中
@@ -267,15 +268,12 @@ class Tracker:
                     cv2.putText(out_img,
                                 f"我测你老母",
                                 (660, 380), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
-                    #self.initial(armor)
+                    # self.initial(armor)
         cv2.putText(out_img,
                     f"is_match:{matched}  is_new:{is_new_armor}",
                     (660, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
         cv2.putText(out_img, f"state:{self.state}", (50, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 150, 0), 2)
-
-
-
 
         if self.state == TracState.DETECTING:
             if matched:

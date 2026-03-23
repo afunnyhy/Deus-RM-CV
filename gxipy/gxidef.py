@@ -13,9 +13,9 @@ UNSIGNED_LONG_LONG_MAX = 0xFFFFFFFFFFFFFFFF
 
 # frame state code
 class GxFrameStatusList:
-    SUCCESS = 0                 # Normal frame
-    INCOMPLETE = -1             # Incomplete frame
-    INVALID_IMAGE_INFO = -2     # invalid image info
+    SUCCESS = 0  # Normal frame
+    INCOMPLETE = -1  # Incomplete frame
+    INVALID_IMAGE_INFO = -2  # invalid image info
 
     def __init__(self):
         pass
@@ -23,40 +23,40 @@ class GxFrameStatusList:
 
 # Device type code
 class GxDeviceClassList:
-    UNKNOWN = 0                 # Unknown device type
-    USB2 = 1                    # USB2.0 vision device
-    GEV = 2                     # Gige vision device
-    U3V = 3                     # USB3.0 vision device
-    SMART = 4                   # Smart device
+    UNKNOWN = 0  # Unknown device type
+    USB2 = 1  # USB2.0 vision device
+    GEV = 2  # Gige vision device
+    U3V = 3  # USB3.0 vision device
+    SMART = 4  # Smart device
 
     def __init__(self):
         pass
 
 
 class GxAccessMode:
-    READONLY = 2                # Open the device in read-only mode
-    CONTROL = 3                 # Open the device in controlled mode
-    EXCLUSIVE = 4               # Open the device in exclusive mode
+    READONLY = 2  # Open the device in read-only mode
+    CONTROL = 3  # Open the device in controlled mode
+    EXCLUSIVE = 4  # Open the device in exclusive mode
 
     def __init__(self):
         pass
 
 
 class GxAccessStatus:
-    UNKNOWN = 0                # The device's current status is unknown
-    READWRITE = 1              # The device currently supports reading and writing
-    READONLY = 2               # The device currently only supports reading
-    NOACCESS = 3               # The device currently does neither support reading nor support writing
+    UNKNOWN = 0  # The device's current status is unknown
+    READWRITE = 1  # The device currently supports reading and writing
+    READONLY = 2  # The device currently only supports reading
+    NOACCESS = 3  # The device currently does neither support reading nor support writing
 
     def __init__(self):
         pass
 
 
 class GxIPConfigureModeList:
-    DHCP = 0x6                 # Enable the DHCP mode to allocate the IP address by the DHCP server
-    LLA = 0x4                  # Enable the LLA mode to allocate the IP addresses
-    STATIC_IP = 0x5            # Enable the static IP mode to configure the IP address
-    DEFAULT = 0x7              # Enable the default mode to configure the IP address
+    DHCP = 0x6  # Enable the DHCP mode to allocate the IP address by the DHCP server
+    LLA = 0x4  # Enable the LLA mode to allocate the IP addresses
+    STATIC_IP = 0x5  # Enable the static IP mode to configure the IP address
+    DEFAULT = 0x7  # Enable the default mode to configure the IP address
 
     def __init__(self):
         pass
@@ -159,8 +159,8 @@ class GxTestPatternEntry:
 
 
 class GxTestPatternGeneratorSelectorEntry:
-    SENSOR = 0          # Sensor test pattern
-    REGION0 = 1         # FPGA test pattern
+    SENSOR = 0  # Sensor test pattern
+    REGION0 = 1  # FPGA test pattern
 
     def __init__(self):
         pass
@@ -205,9 +205,9 @@ class GxBinningVerticalModeEntry:
 
 
 class GxSensorShutterModeEntry:
-    GLOBAL = 0              # All pixels are exposed simultaneously with same exposure time
-    ROLLING = 1             # All pixels have the same exposure time, but exposure start at different time
-    GLOBALRESET = 2         # All pixels start exposure at same time, but exposure time are different
+    GLOBAL = 0  # All pixels are exposed simultaneously with same exposure time
+    ROLLING = 1  # All pixels have the same exposure time, but exposure start at different time
+    GLOBALRESET = 2  # All pixels start exposure at same time, but exposure time are different
 
     def __init__(self):
         pass
@@ -503,7 +503,7 @@ class GxResetDeviceModeEntry:
 
 
 class GxTimerSelectorEntry:
-    TIMER1 = 1         
+    TIMER1 = 1
 
     def __init__(self):
         pass
@@ -616,9 +616,9 @@ class GxSwitchEntry:
 
 # image interpolation method
 class DxBayerConvertType:
-    NEIGHBOUR = 0                           # Neighborhood average interpolation algorithm
-    ADAPTIVE = 1                            # Edge adaptive interpolation algorithm
-    NEIGHBOUR3 = 2                          # The neighborhood average interpolation algorithm for a larger region
+    NEIGHBOUR = 0  # Neighborhood average interpolation algorithm
+    ADAPTIVE = 1  # Edge adaptive interpolation algorithm
+    NEIGHBOUR3 = 2  # The neighborhood average interpolation algorithm for a larger region
 
     def __init__(self):
         pass
@@ -626,11 +626,11 @@ class DxBayerConvertType:
 
 # image valid bit
 class DxValidBit:
-    BIT0_7 = 0              # bit 0~7
-    BIT1_8 = 1              # bit 1~8
-    BIT2_9 = 2              # bit 2~9
-    BIT3_10 = 3             # bit 3~10
-    BIT4_11 = 4             # bit 4~11
+    BIT0_7 = 0  # bit 0~7
+    BIT1_8 = 1  # bit 1~8
+    BIT2_9 = 2  # bit 2~9
+    BIT3_10 = 3  # bit 3~10
+    BIT4_11 = 4  # bit 4~11
 
     def __init__(self):
         pass
@@ -638,8 +638,8 @@ class DxValidBit:
 
 # image mirror method
 class DxImageMirrorMode:
-    HORIZONTAL_MIRROR = 0                               # Horizontal mirror
-    VERTICAL_MIRROR = 1                                 # Vertical mirror
+    HORIZONTAL_MIRROR = 0  # Horizontal mirror
+    VERTICAL_MIRROR = 1  # Vertical mirror
 
     def __init__(self):
         pass

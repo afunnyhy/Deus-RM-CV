@@ -7,7 +7,7 @@ class InitCamera:  # 初始化相机
     def __init__(self, camera_id):
         self.camera_id = camera_id
         if camera_id == CameraType.DAHENG:
-            self.cap = GxVideoCupture(exposure_time=4000, gain=0, Binning=[2, 2], BinningMode=[0, 0])
+            self.cap = GxVideoCupture(exposure_time=4000, gain=10, Binning=[2, 2], BinningMode=[0, 0])
         elif camera_id == CameraType.HAIKANG:
             self.cap = HkCaptureVedio(exposure_time=5000, gain=16)
             self.cap.start_grabbing()
