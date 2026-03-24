@@ -1,7 +1,5 @@
 from ultralytics import YOLO
 
-# import tensorrt as trt
-
 # 载入模型
 model = YOLO("weight/20250318_normal.pt", task="detect")
 

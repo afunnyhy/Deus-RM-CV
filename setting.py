@@ -4,20 +4,14 @@
 from all_type import *
 
 # 云台坐标系原点相对相机镜头中心点的平移向量, 由机器人尺寸测量得到(单位: m)------------------------------------------------------------
-# 老烧饼
-origin_gimbal_old_sb = np.array([0, -0.04475, -0.131705])
-
-# 新烧饼相机上置
-origin_gimbal_new_sb_up = np.array([0, 0.04902, -0.08932])
-
-# 新烧饼相机下置
+# 烧饼相机下置
 origin_gimbal_new_sb_down = np.array([0, -0.04509, -0.18435])
 
-# 新步兵相机上置
+# 步兵相机下置
 origin_gimbal_bb_up = np.array([0, -0.04959, -0.17185])
 
-# 新英雄相机下置
-origin_gimbal_yx_down = np.array([0, -0.0563, -0.23985])
+# 英雄相机下置
+origin_gimbal_yx_down = np.array()
 
 # 相机内参矩阵------------------------------------------------------------------------------------------------------
 # self.camera_matrix = np.array([[self.fx, 0, self.cx],
@@ -26,24 +20,23 @@ origin_gimbal_yx_down = np.array([0, -0.0563, -0.23985])
 # 相机畸变系数
 # self.dist_coefficients = np.array([self.k1, self.k2, self.p1, self.p2, self.k3])
 
-# 大恒老相机
-daheng_1_camera_matrix = np.array([[7.716379127971313e+02, 0, 5.183947142266674e+02],
-                                   [0, 7.716767700989153e+02, 3.102502727089079e+02],
-                                   [0, 0, 1]])
-daheng_1_dist_coefficients = np.array(
-    [-0.083388858626141, 0.152721313501007, -3.919473027550272e-04, -5.753236297258918e-06, -0.048868652840575])
+# 大恒相机
+daheng_1_camera_matrix = np.array([[773.9795, 0.0, 515.3171],
+                                   [0.0, 773.9609, 309.1733],
+                                   [0.0, 0.0, 1.0]])
+daheng_1_dist_coefficients = np.array([-0.080853, 0.125599, 0.0, 0.0, 0.0])
 
 # 海康相机1
-haikang_1_camera_matrix = np.array([[2395.8701, 0, 698.3712],
-                                    [0, 2395.5855, 572.1990],
-                                    [0, 0, 1]])
-haikang_1_dist_coefficients = np.array([-0.0322, 0.1497, 0.0008109, 6.716e-05, -0.1226])
+haikang_1_camera_matrix = np.array([[2.4010857e+03, 0.0000000e+00, 6.9597490e+02],
+                                    [0.0000000e+00, 2.4002448e+03, 5.6805220e+02],
+                                    [0.0000000e+00, 0.0000000e+00, 1.0000000e+00]])
+haikang_1_dist_coefficients = np.array([-0.034071, 0.169365, 0.0, 0.0, 0.0])
 
 # 海康相机2
-haikang_2_camera_matrix = np.array([[2415.7, 0, 716.1212],
-                                    [0, 2416, 556.5836],
-                                    [0, 0, 1]])
-haikang_2_dist_coefficients = np.array([-0.0451, 0.4553, -1.4647e-4, 9.4951e-4, -2.0458])
+haikang_2_camera_matrix = np.array([[1.7895407e+03, 0.0000000e+00, 7.1850660e+02],
+                                    [0.0000000e+00, 1.7865637e+03, 5.5832830e+02],
+                                    [0.0000000e+00, 0.0000000e+00, 1.0000000e+00]])
+haikang_2_dist_coefficients = np.array([-0.078121, 0.144656, 0.0, 0.0, 0.0])
 
 # 模型参数--------------------------------------------------------------------------------------------------------
 model_path = "./weight/"
@@ -58,15 +51,17 @@ recorrect_pixel = 0.92
 g = 9.79460
 # 默认初始弹速(m/s)
 defaults_bullet_speed = 23
-# yaw动态时补偿参数t0,由不同机器人暴力测试得出
-t0 = {
-    TroopType.SENTINEL: 0.5,  # 哨兵的yaw运动参数
-    TroopType.HERO: 0.5,  # 英雄的yaw运动参数
-    TroopType.INFANTRY: 0.5  # 步兵的yaw运动参数
-}
+# yaw和pitch的缓冲系数,0-1之间，数值越小越平滑，但也会增加响应时间
+yaw_buffer_factor = 0.75
+pitch_buffer_factor = 0.75
+# 是否给电控发弧度差值(True为差值 False为目标绝对值)
+send_radian_diff = False
+# 最大lock误差角度
+miss_yaw_angle = 0.75  # 电控yaw与目标yaw的最大误差角度，单位:度，超过这个角度认为未锁定
+miss_pitch_angle = 0.6  # 电控pitch与目标pitch的最大误差角度，单位:度，超过这个角度认为未锁定
 
 # 对局需要手动设置的重要参数------------------------------------------------------------------------------------------
-# 我方颜色,后根据通信自动设置
+# 我方颜色,与电控通信后根据裁判系统自动设置
 friend_color = Color.RED
 # 我方兵种 (哨兵SENTINEL 英雄HERO 步兵INFANTRY)
 my_TroopType = TroopType.SENTINEL
@@ -76,15 +71,14 @@ my_TroopType = TroopType.SENTINEL
 save_video_time = 0
 # 是否展示视频
 is_show_video = True
+
+# 以下参数已经废弃，修改无效
 # 是否展示3D绘图
 is_show_3d = False
 # 是否瞄准预测后的装甲板,False为不开启预测
 used_predict = False
 # 是否使用模型推理
 used_yolo = True
-if my_TroopType == TroopType.HERO:
-    # 英雄使用CV
-    used_yolo = False
 
 # 自动选择相机
 cameraID = CameraID.HAIKANG_2  # 相机ID
@@ -103,7 +97,6 @@ if my_TroopType == TroopType.INFANTRY:  # 步兵
 elif my_TroopType == TroopType.HERO:  # 英雄
     origin_gimbal = origin_gimbal_yx_down  # 英雄相机下置
 elif my_TroopType == TroopType.SENTINEL:  # 哨兵
-    # origin_gimbal = origin_gimbal_new_sb_up  # 新哨兵相机上置
     origin_gimbal = origin_gimbal_new_sb_down  # 新哨兵相机下置
 # origin_gimbal = origin_gimbal_bb_up  # 强制选择平移向量
 
