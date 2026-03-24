@@ -2,3 +2,6 @@
 
 *.bat eol=crlf
 *.cmd eol=crlf
+
+*.onnx binary
+*.engine binary
