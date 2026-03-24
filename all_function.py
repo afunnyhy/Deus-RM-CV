@@ -3,7 +3,7 @@
 """
 import math
 import numpy as np
-from setting import origin_gimbal, camera_matrix
+from setting import origin_gimbal, camera_matrix, defaults_bullet_speed
 
 
 # 将世界坐标系转换为相机坐标系，pos为世界坐标系下的坐标，rmat为旋转矩阵，tvec为平移向量
@@ -77,7 +77,7 @@ def camera2xy(pos):
 
 
 # 计算弹道补偿角度,即pitch角度，水平为0度
-def ballistic_compensation(pos, projectile_velocity=22):  # 默认弹丸速度22m/s
+def ballistic_compensation(pos, projectile_velocity=defaults_bullet_speed):  # 默认弹丸速度22m/s
     g = 9.83  # 上海的重力加速度
     # 使用云台坐标系下的坐标计算补偿角度
     v2 = projectile_velocity * projectile_velocity

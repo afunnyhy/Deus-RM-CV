@@ -35,7 +35,6 @@ class VisionData_t:
         """自动寻找并打开串口，并清空历史积压数据"""
         uart = None
         if int(port) < 0:
-            # 优先尝试你刚刚编译出来的 CH341 驱动路径
             for i in range(15):
                 try:
                     uart = serial.Serial(port=f"/dev/ttyCH341USB{i}", baudrate=bps, timeout=timeout)
@@ -58,7 +57,6 @@ class VisionData_t:
                 print(f"打开指定串口失败: {e}")
 
         if uart and uart.is_open:
-            # 🚨 极度关键：打开瞬间必须清空之前积压的所有垃圾数据
             uart.reset_input_buffer()
             uart.reset_output_buffer()
             return uart
@@ -78,7 +76,6 @@ class VisionData_t:
     def send(self):
         if self.uart and self.uart.is_open:
             try:
-                # 按照你的协议打包数据
                 data = struct.pack('<BB', self.BEGIN, self.CmdID)
                 data += struct.pack('<fff', float(self.pitch_angle), float(self.yaw_angle), float(self.distance))
                 data += struct.pack('<BBBB', self.center_lock, self.identify_target, self.identify_buff, self.END)
