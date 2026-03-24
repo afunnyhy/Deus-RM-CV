@@ -1,20 +1,9 @@
-import argparse
 import os
 import sys
-import onnxruntime as ort
-import cv2
-import torch
-import numpy as np
 import time
-import math
 from collections import deque
-import subprocess
 import threading
-import serial
-import struct
-from threading import Thread
 import matplotlib.pyplot as plt
-import UART
 from setting import *
 from all_function import *
 from all_type import *
@@ -89,8 +78,6 @@ def oscilloscope():
 
         plt.pause(1.0 / DISPLAY_FPS)
 
-
-# from exceptiongroup import catch
 
 CUDA = True
 USE_OAK = False
@@ -306,32 +293,46 @@ def run():
                         f"predicted x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{predicted_armor_yaw * 180.0 / math.pi:<9.3f}",
                         (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
 
-            angle_yoz = - (change_angle - angle_pitch)
-            angle_yoz = angle_pitch + angle_yoz
-
-            # 补丁
-            diff = - (change_angle - angle_pitch)
-            angle_yoz = angle_yoz - diff + 0.5 * diff
-
-            if az < 0.1:  # 距离过近
+            if az < 0.1:  # 距离过近忽略
                 continue
-            angle_xoz = math.atan(ax / az) * 0.5 + vision.yaw
+            if str(math.atan(ax / az)) == "nan":
+                continue
+
+            # 计算发电控的pitch
+            if send_radian_diff:
+                angle_yoz = yaw_buffer_factor * (angle_pitch - change_angle)  # 发缓冲差值弧度
+            else:
+                angle_yoz = yaw_buffer_factor * (angle_pitch - change_angle) + angle_pitch  # 发缓冲定值弧度
+            # 计算发电控的yaw
+            if send_radian_diff:
+                angle_xoz = math.atan(ax / az) * pitch_buffer_factor  # 发缓冲差值弧度
+            else:
+                angle_xoz = math.atan(ax / az) * pitch_buffer_factor + vision.yaw  # 发缓冲定值弧度
+
+            # 防止角度超限
             while angle_xoz < -math.pi:
                 angle_xoz += 2 * math.pi
             while angle_xoz > math.pi:
                 angle_xoz -= 2 * math.pi
+
             if tra.state == TracState.TEMP_LOST:
                 angle_xoz = angle_xoz - (vision.yaw - last_vision_yaw)
-            if str(angle_xoz) == "nan":
-                continue
-            lock = 0
-            if max(abs(angle_xoz - vision.yaw), abs(angle_yoz - vision.pitch)) > 0.8 * math.pi / 180:
-                lock = 0
+
+            # 是否锁上目标判断逻辑
+            miss_yaw = miss_yaw_angle * math.pi / 180 / yaw_buffer_factor
+            miss_pitch = miss_pitch_angle * math.pi / 180 / pitch_buffer_factor
+            if send_radian_diff:
+                if abs(angle_xoz) > miss_yaw or abs(angle_yoz) > miss_pitch:
+                    lock = 0
+                else:
+                    lock = 1
             else:
-                lock = 1
+                if abs(angle_xoz - vision.yaw) > miss_yaw or abs(angle_yoz - vision.pitch) > miss_pitch:
+                    lock = 0
+                else:
+                    lock = 1
+
             vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, lock)
-            now = time.time()
-            dt = now - t0
 
             v1 = vision.pitch * 180 / math.pi
             v2 = angle_yoz * 180 / math.pi
@@ -394,5 +395,4 @@ if __name__ == "__main__":
     osc_thread = threading.Thread(target=oscilloscope)
     t1.start()
     t2.start()
-    # osc_thread.start()
-    # run()
+    osc_thread.start()

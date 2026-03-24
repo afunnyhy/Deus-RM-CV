@@ -1,7 +1,65 @@
-* text eol=lf
+# 1. 默认设置：所有文件自动处理换行符
+* text=auto
 
-*.bat eol=crlf
-*.cmd eol=crlf
+# 2. 文本文件：强制使用 LF (Linux/macOS 风格，兼容性最好)
+*.c       text eol=lf
+*.cpp     text eol=lf
+*.h       text eol=lf
+*.hpp     text eol=lf
+*.cmake   text eol=lf
+Makefile  text eol=lf
+*.cc      text eol=lf
+*.py      text eol=lf
+*.js      text eol=lf
+*.ts      text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+*.txt     text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.toml    text eol=lf
+*.xml     text eol=lf
+*.sh      text eol=lf
+*.css     text eol=lf
+*.html    text eol=lf
+*.csv     text eol=lf
+*.proto   text eol=lf
+*.gitignore      text eol=lf
+*.gitattributes  text eol=lf
 
-*.onnx binary
-*.engine binary
+# 3. 显式指定必须使用 CRLF 的文件（Windows 专属）
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+*.sln     text eol=crlf
+
+# 4. 二进制文件：禁止 Git 尝试任何修改
+# 深度学习/模型文件
+*.onnx    binary
+*.engine  binary
+*.pt      binary
+*.pth     binary
+*.weights binary
+*.pb      binary
+*.tflite  binary
+
+# 图像/多媒体
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.mp4     binary
+*.avi     binary
+*.pdf     binary
+
+# 压缩包/库/可执行文件
+*.zip     binary
+*.tar     binary
+*.gz      binary
+*.7z      binary
+*.dll     binary
+*.so      binary
+*.a       binary
+*.lib     binary
+*.exe     binary
