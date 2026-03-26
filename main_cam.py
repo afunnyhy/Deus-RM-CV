@@ -1,100 +1,44 @@
 import os
 import sys
-from chase_sender import *
 import time
 import threading
-import matplotlib.pyplot as plt
 from setting import *
 from all_function import *
 from all_type import *
-from pre_armor import Tracker  # 跟踪器类
+
+from camera_get_photo import InitCamera  # 相机类
 from detect_armor import ArmorDetector  # 模型推理类
 from get_armor_points_cv import armor_getter  # 初始化装甲板检测类
-from UART import VisionData_t  # 通信类
-from camera_get_photo import InitCamera  # 相机类
 from light_detector import LightDetector  # 导入灯条解算类
-from armor_chose import TargetSelector  # 导入目标选择类
 from pnp_solver import PnPSolver  # 导入PnP解算类
+from armor_chose import TargetSelector  # 导入目标选择类
+from pre_armor import Tracker  # 跟踪器类
 
-CUDA = True
-USE_OAK = False
-USE_DH = True
-FPS_TIME = 3
-ROTATE = True
-# is_show_video=False
+from UART import VisionData_t  # 电控通信
+from chase_sender import EnemyVisionSender  # 导航通信
 
 ROOT = os.getcwd()
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-PORT = -1
-BPS = 115200
-TIMEOUT = 5
-
 # communication
-vision = VisionData_t(PORT, BPS, TIMEOUT)
-sender = EnemyVisionSender(target_ip="192.168.1.5", target_port=8964)
-
-# 初始化3D绘图
-if is_show_3d:
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_xlim(-3, 3)
-    ax.set_ylim(-0.5, 3)
-    ax.set_zlim(0, 2)
-    plt.ion()
-    plt.show()
-
-
-def update_3d_fig(pre_amror):
-    plt.cla()
-    # 提取数据
-    x, y, z, yaw, r = pre_amror.x, pre_amror.y, pre_amror.z, pre_amror.yaw, 0.26
-
-    cx = x + r * np.cos(yaw)
-    cy = y
-    cz = z + r * np.sin(yaw)
-
-    for i in range(3):
-        angle = yaw + (i + 1) * np.pi / 2
-        x_i = cx - r * np.cos(angle)
-        y_i = cy
-        z_i = cz - r * np.sin(angle)
-        ax.scatter(x_i, z_i, y_i, c='red', s=50, label='Armor Point')
-
-    # 绘制装甲板点和圆心
-    ax.scatter(0, 0, 0, c='green', s=50, label='Car Point')
-    ax.scatter(x, z, y, c='red', s=50, label='Armor Point')
-    ax.scatter(cx, cz, cy, c='blue', s=50, marker='x', label='Circle Center')
-
-    ax.set_xlim(-3, 3)
-    ax.set_ylim(-0.5, 3)
-    ax.set_zlim(0, 2)
-
-    plt.pause(0.0001)
-    plt.draw()
-
-
-def write1(x, y, z):
-    with open('data.txt', 'a') as file:
-        file.write(f"{x} {y} {z}\n")
+vision = VisionData_t(baud_rate)
+if send_chase:
+    sender = EnemyVisionSender(target_ip=send_target_ip, target_port=send_target_port)
 
 
 def run():
     # 初始化相机类
-    print("Camera type:", cameraType, "    ID:", cameraID)
+    print("Camera type:", cameraType, " , ID:", cameraID)
     camera = InitCamera(cameraType)
-    print(cameraID, "init success.")
+    print(cameraID, "finish init")
     if used_yolo:
         # 初始化模型推断类
-        print("model:", model_path + model_name, "   use_cuda:", CUDA)
-        armor_de = ArmorDetector(model_path, model_name, CUDA, friend_color)  # 我方颜色
-        print("armor detector init success.")
-        print("Troop type:", my_TroopType, "   Friend color:", friend_color)
-        print("Is show video:", is_show_video, "   Save video times:", save_video_time)
+        print("model:", model_name)
+        armor_de = ArmorDetector(model_path, model_name, friend_color)
+        print("Armor detector init success")
+        print("Troop type:", my_TroopType, " , Friend color:", friend_color)
+        print("Is show video:", is_show_video, " , Save video times:", save_video_time)
     else:
         # 初始化CV类
         armor_de = armor_getter(friend_color)
@@ -233,45 +177,30 @@ def run():
 
             if az < 0.1:  # 距离过近忽略
                 continue
-            if str(math.atan(ax / az)) == "nan":
-                continue
 
-            # 计算发电控的pitch
-            if send_radian_diff:
-                angle_yoz = yaw_buffer_factor * (angle_pitch - change_angle)  # 发缓冲差值弧度
-            else:
-                angle_yoz = yaw_buffer_factor * (angle_pitch - change_angle) + angle_pitch  # 发缓冲定值弧度
-            # 计算发电控的yaw
-            if send_radian_diff:
-                angle_xoz = math.atan(ax / az) * pitch_buffer_factor  # 发缓冲差值弧度
-            else:
-                angle_xoz = math.atan(ax / az) * pitch_buffer_factor + vision.yaw  # 发缓冲定值弧度
-
-            # 防止角度超限
-            while angle_xoz < -math.pi:
-                angle_xoz += 2 * math.pi
-            while angle_xoz > math.pi:
-                angle_xoz -= 2 * math.pi
+            # 计算发电控的弧度
+            angle_xoz = math.atan2(ax, az) * yaw_buffer_factor
+            angle_yoz = pitch_buffer_factor * (angle_pitch - change_angle)
+            if not send_radian_diff:
+                angle_xoz += vision.yaw
+                angle_yoz += angle_pitch
+            # 弧度归一化 [-pi, pi]
+            angle_xoz = (angle_xoz + math.pi) % (2 * math.pi) - math.pi
+            angle_yoz = (angle_yoz + math.pi) % (2 * math.pi) - math.pi
 
             if tra.state == TracState.TEMP_LOST:
                 angle_xoz = angle_xoz - (vision.yaw - last_vision_yaw)
 
             # 是否锁上目标判断逻辑
-            miss_yaw = miss_yaw_angle * math.pi / 180 / yaw_buffer_factor
-            miss_pitch = miss_pitch_angle * math.pi / 180 / pitch_buffer_factor
-            if send_radian_diff:
-                if abs(angle_xoz) > miss_yaw or abs(angle_yoz) > miss_pitch:
-                    lock = 0
-                else:
-                    lock = 1
-            else:
-                if abs(angle_xoz - vision.yaw) > miss_yaw or abs(angle_yoz - vision.pitch) > miss_pitch:
-                    lock = 0
-                else:
-                    lock = 1
+            miss_yaw = miss_yaw_angle * math.pi / 180.0 / yaw_buffer_factor
+            miss_pitch = miss_pitch_angle * math.pi / 180.0 / pitch_buffer_factor
+            dy = angle_xoz if send_radian_diff else (angle_xoz - vision.yaw)
+            dp = angle_yoz if send_radian_diff else (angle_yoz - vision.pitch)
+            lock = 0 if abs(dy) > miss_yaw or abs(dp) > miss_pitch else 1
 
             vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, lock)  # 发给电控
-            sender.update_data(is_detected=True, rel_x=az, rel_y=ax)  # 发给导航
+            if send_chase:
+                sender.update_data(is_detected=True, rel_x=az, rel_y=ax)  # 发给导航
 
             # 标记显示预测后的装甲板
             # predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
@@ -283,14 +212,16 @@ def run():
             # print(f"yaw旋转到{angle_xoz * 180 / math.pi}°,pitch旋转{angle_yoz * 180 / math.pi}°")
             # vision.send()
         else:
-            vision.set_data(vision.yaw, 0, 0, 0, 0)  # 发给电控
-            sender.update_data(is_detected=False, rel_x=0, rel_y=0)  # 发给导航
+            offset = (0, 0) if send_radian_diff else (vision.yaw, vision.pitch)
+            vision.set_data(*offset, 0, 0, 0)  # 发给电控
+            if send_chase:
+                sender.update_data(is_detected=False, rel_x=0, rel_y=0)  # 发给导航
 
         # cv2.putText(out_img,
         #             f"received pitch:{(vision.pitch * 180 / math.pi) if vision.pitch is not None else 0:<9.3f} yaw:{(vision.yaw * 180 / math.pi) if vision.yaw is not None else 0:<9.3f} ",
         #             (50, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
 
-        cv2.putText(out_img, f"state:{tra.state},cmid:{vision.CmdID}", (50, 50),
+        cv2.putText(out_img, f"state:{tra.state},cmd_id:{vision.CmdID}", (50, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 150, 0), 2)
         if save_video_time > 0:
             video_writer.write(out_img)
@@ -301,24 +232,22 @@ def run():
             cv2.imshow("vision output", small_img)
             cv2.waitKey(1)
         cnt += 1
-        if cnt == 20:
-            fps = 20 / (time.time() - time1)
+        if cnt == 25:
+            fps = 25 / (time.time() - time1)
             time1 = time.time()
             cnt = 0
-            print("fps", fps)
+            print("fps:", fps)
 
         if 0 < save_video_time < time.time() - start_time:
             video_writer.release()
             cv2.destroyAllWindows()
-            camera.delete()
             print("video write to", output_file, "over")
-            break
 
 
 if __name__ == "__main__":
-    t1 = threading.Thread(target=vision.start)
-    t2 = threading.Thread(target=run)
-    t1.start()
-    t2.start()
-    sender.start(hz=50.0)
-    # run()
+    communication_control = threading.Thread(target=vision.start)
+    detect = threading.Thread(target=run)
+    communication_control.start()
+    detect.start()
+    if send_chase:
+        sender.start(hz=50.0)

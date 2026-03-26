@@ -1,24 +1,22 @@
 import os
-
 import torch
-
 from ultralytics import YOLO
 from all_type import *
-import time
 import cv2
 
 
 class ArmorDetector:  # 模型推理类
 
-    def __init__(self, model_path, model_name, CUDA, CmdID, model_type=".onnx"):
-        print(torch.cuda.is_available())
+    def __init__(self, model_path: str, model_name: str, CmdID, CUDA=True):
+        print("torch.cuda.is_available:", torch.cuda.is_available())
         self.photo = None
         self.CUDA = CUDA  # 是否使用GPU
         self.CmdID = CmdID  # 我方装甲板颜色id
-        self.resize_shape = 320  # 图片缩放尺寸
+        self.resize_shape = 640  # 图片缩放尺寸
         self.min_confidence = 0.7  # 最低置信度
-        model_name += model_type
-        self.model_path = os.path.abspath(os.path.join(model_path, model_name))  # 模型路径
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        model_dir = os.path.join(script_dir, model_path)
+        self.model_path = os.path.abspath(os.path.join(model_dir, model_name))
         print("model path:", self.model_path)
         self.model = YOLO(self.model_path, task="detect")  # 初始化模型
         # print(self.model.device)
@@ -37,56 +35,42 @@ class ArmorDetector:  # 模型推理类
             self.pos_cls = Color.BLUE
 
     def detect_armor(self, orig_img, detect_color=None):
+        # 颜色判断逻辑
         if detect_color is None:
             detect_color = self.pos_cls
         else:
-            if detect_color == 1:
-                detect_color = Color.BLUE
-            else:  # 0
-                detect_color = Color.RED
-        frame_img = orig_img.copy()  # 复制原图
-        out_img = orig_img.copy()
+            detect_color = Color.BLUE if detect_color == 1 else Color.RED
 
-        ori_h, ori_w, ori_c = frame_img.shape
-        frame_img = cv2.resize(frame_img, (ori_w // 2, ori_h // 2), interpolation=cv2.INTER_NEAREST)
-
+        out_img = orig_img
         # 运行推理
-        start = time.time()
-        output = self.model(frame_img, imgsz=self.resize_shape, device="cuda" if self.CUDA else "cpu", verbose=False)
-        # print(f"Model device: {self.model.device}")
-        # print(round(1/(time.time()-start),2))
-
-        # 解析输出
-        detected = []  # 检测到的装甲板
-        for i, result in enumerate(output):
+        results = self.model(orig_img, imgsz=self.resize_shape, device="cuda:0" if self.CUDA else "cpu", verbose=False,
+                             stream=True)
+        detected = []
+        for result in results:  # stream=True 返回的是生成器
             boxes = result.boxes
-            names = result.names
-            for box in boxes:
-                confidence = box.conf[0].item()
+            if len(boxes) == 0:
+                continue
+            # 一次性将所有框的数据拉回 CPU，转换为 numpy 数组进行批量操作
+            confs = boxes.conf.cpu().numpy()
+            clses = boxes.cls.cpu().numpy()
+            xyxys = boxes.xyxy.cpu().numpy()
+            for i in range(len(boxes)):
+                confidence = confs[i]
                 if confidence < self.min_confidence:
-                    continue  # 置信度过低
-                label_name = names[int(box.cls[0].item())]
-                # print("label_name", label_name)
+                    continue
+                label_name = result.names[int(clses[i])]
                 color_type, troop_type = self.label_index[label_name]
                 if color_type != detect_color:
-                    continue  # 颜色不符合
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                xyxy = [x1 * 2, y1 * 2, x2 * 2, y2 * 2]
-                # 提取边界框颜色
-                color_print = (0, 0, 255)  # 默认红色
-                if color_type == Color.BLUE:  # 根据类别设置不同颜色
-                    color_print = (255, 0, 0)  # 蓝色
+                    continue
+                x1, y1, x2, y2 = map(int, xyxys[i])
+
                 # 绘制边界框
-                cv2.rectangle(out_img, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), color_print, 2)
-                # 绘制标签
-                cv2.putText(out_img, f"{names[int(box.cls[0].item())]} {confidence:.2f}",
-                            (int(xyxy[0]), int(xyxy[1]) - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_print, 2)
+                color_print = (255, 0, 0) if color_type == Color.BLUE else (0, 0, 255)
+                cv2.rectangle(out_img, (x1, y1), (x2, y2), color_print, 2)
+                cv2.putText(out_img, f"{label_name} {confidence:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            color_print, 2)
+                detect_armor = ArmorPlate([x1, y1, x2, y2], color_type, troop_type, confidence)
+                detected.append(detect_armor)
 
-                detect_armor = ArmorPlate(xyxy, color_type, troop_type, confidence)  # 构建装甲板对象
-                detected.append(detect_armor)  # 添加到检测到的装甲板列表
-
-        # 按照置信度排序
         detected.sort(key=lambda x: x.confident, reverse=True)
-
-        return detected, out_img  # 返回检测到的装甲板列表
+        return detected, out_img
