@@ -4,7 +4,7 @@ import time
 
 
 class VisionData_t:
-    def __init__(self, PORT, BPS, TIMEOUT):
+    def __init__(self, BPS, TIMEOUT=5, PORT=-1):
         self.PORT = PORT
         self.BPS = BPS
         self.TIMEOUT = TIMEOUT
@@ -29,6 +29,8 @@ class VisionData_t:
         self.yaw = 0.0
 
         self.start_flag = False
+        self._buffer = bytearray()  # 声明字节缓冲区
+
         self.uart = self.open_uart(self.PORT, self.BPS, self.TIMEOUT)
 
     def open_uart(self, port, bps, timeout):
@@ -65,7 +67,6 @@ class VisionData_t:
             return None
 
     def close_uart(self):
-        """修复了原代码中传参错误的 bug"""
         if self.uart and self.uart.is_open:
             try:
                 self.uart.close()
@@ -86,48 +87,55 @@ class VisionData_t:
     def get(self):
         try:
             if not self.uart or not self.uart.is_open:
+                time.sleep(0.01)
                 return
 
-            # --- 核心防延迟机制：缓冲区积压清理 ---
             waiting = self.uart.in_waiting
+            if waiting > 0:
+                # 一口气读取底层全部就绪数据并追加到内存缓冲区
+                self._buffer.extend(self.uart.read(waiting))
+            else:
+                # 如果没有新数据，主动休眠极短时间，避免 while 循环跑满 CPU 单核
+                time.sleep(0.001)
+                return
 
-            # 一帧长度 = 1(帧头)+1(ID)+4(v)+4(yaw)+4(pitch)+4(roll)+1(帧尾) = 19字节
             FRAME_LEN = 19
+            # 防止异常延迟：如果积压了过多的数据包，截断前面的旧数据，只保留最近的约10帧 (190字节)
+            if len(self._buffer) > FRAME_LEN * 10:
+                self._buffer = self._buffer[-FRAME_LEN * 10:]
 
-            if waiting > FRAME_LEN * 3:
-                # 🚨 如果底层积压了超过 3 帧的数据，说明代码处理速度落后了
-                # 直接暴力清空，丢弃历史包，确保下一轮拿到绝对的“最新姿态”
-                self.uart.reset_input_buffer()
+            # 如果当前缓冲区数据还不够一帧长度，直接返回，等下一轮 get() 补齐
+            if len(self._buffer) < FRAME_LEN:
                 return
 
-            if waiting < FRAME_LEN:
-                # 数据不够一帧完整长度，直接返回给上层逻辑，绝不休眠死等！
-                return
+            # 遍历缓冲区，解析所有完整的帧
+            processed_any = False
+            while len(self._buffer) >= FRAME_LEN:
+                if self._buffer[0] == self.BEGIN:
+                    if self._buffer[FRAME_LEN - 1] == self.END:
+                        # 找到完整的一帧
+                        frame_data = self._buffer[:FRAME_LEN]
+                        self._buffer = self._buffer[FRAME_LEN:]
 
-            # --- 暴力对齐寻找包头 ---
-            rdata = self.uart.read(1)
-            if not rdata or rdata[0] != self.BEGIN:
-                return
+                        data = frame_data[1:]  # 去掉BEGIN字节，对应后面的解包逻辑
+                        self.CmdID = struct.unpack('<B', data[0:1])[0]
+                        self.speed = struct.unpack('<f', data[1:5])[0]
+                        self.yaw = struct.unpack('<f', data[5:9])[0]
+                        self.pitch = struct.unpack('<f', data[9:13])[0]
+                        self.roll = struct.unpack('<f', data[13:17])[0]
 
-            # 找到了包头，读取剩下 18 字节
-            data = self.uart.read(18)
-            if len(data) != 18 or data[-1] != self.END:
-                # 数据发生错位断层，清空缓存重新对齐
-                self.uart.reset_input_buffer()
-                return
+                        processed_any = True
+                    else:
+                        # 包头是对的，但是包尾不对，发生错位
+                        self._buffer = self._buffer[1:]  # 跳过这个包头，继续向后找下一个包头
+                else:
+                    # 不是包头，继续向后找脏数据
+                    self._buffer = self._buffer[1:]
 
-            # --- 安全解包 ---
-            # 建议加上 '<' 指定为小端序，避免 ARM(Jetson) 和 STM32/单片机 字节序不同导致的数值错误
-            self.CmdID = struct.unpack('<B', data[0:1])[0]
-            self.speed = struct.unpack('<f', data[1:5])[0]
-            self.yaw = struct.unpack('<f', data[5:9])[0]
-            self.pitch = struct.unpack('<f', data[9:13])[0]
-            self.roll = struct.unpack('<f', data[13:17])[0]
-
-            self.callback()
+            if processed_any:
+                self.callback()  # 仅触发一次发送函数，确保回应给电控的是最新鲜的 CmdID 序列号
 
         except serial.SerialException as e:
-            # 只有发生物理断线（如线被拔了）才进入重连逻辑
             print(f"串口物理断开，尝试重连: {e}")
             self.close_uart()
             time.sleep(0.5)
@@ -153,6 +161,4 @@ class VisionData_t:
         self.start_flag = False
 
     def callback(self):
-        # 调试用：查看接收到的最新姿态
-        # print(f"最新姿态 -> Yaw: {self.yaw:.2f}, Pitch: {self.pitch:.2f}")
         self.send()

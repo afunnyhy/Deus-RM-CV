@@ -179,8 +179,6 @@ class HkCaptureVedio:
         self.data_size = MV_FRAME_OUT_INFO_EX()
         self.data = (c_ubyte * (1024 * 1024 * 5))()  # 假定最大帧大小为5MB
 
-        print("Camera is running. Press 'q' to quit. Press '3' to save image.")
-
     def read(self):
         ret = self.cam.MV_CC_GetOneFrameTimeout(self.data, len(self.data), self.data_size, 1000)
         if ret == 0:

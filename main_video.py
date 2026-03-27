@@ -24,8 +24,7 @@ from light_detector import LightDetector  # 导入灯条解算类
 from armor_chose import TargetSelector  # 导入目标选择类
 from pnp_solver import PnPSolver  # 导入PnP解算类
 
-# from exceptiongroup import catch
-
+model_name = "best-cv.onnx"
 CUDA = True
 USE_OAK = False
 USE_DH = True

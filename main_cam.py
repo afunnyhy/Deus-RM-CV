@@ -1,211 +1,182 @@
 import os
 import sys
-from chase_sender import *
 import time
 import threading
-import matplotlib.pyplot as plt
+import multiprocessing as mp
+
 from setting import *
 from all_function import *
 from all_type import *
-from pre_armor import Tracker  # 跟踪器类
+
+from camera_get_photo import InitCamera  # 相机类
 from detect_armor import ArmorDetector  # 模型推理类
 from get_armor_points_cv import armor_getter  # 初始化装甲板检测类
-from UART import VisionData_t  # 通信类
-from camera_get_photo import InitCamera  # 相机类
 from light_detector import LightDetector  # 导入灯条解算类
-from armor_chose import TargetSelector  # 导入目标选择类
 from pnp_solver import PnPSolver  # 导入PnP解算类
+from armor_chose import TargetSelector  # 导入目标选择类
+from pre_armor import Tracker  # 跟踪器类
 
-CUDA = True
-USE_OAK = False
-USE_DH = True
-FPS_TIME = 3
-ROTATE = True
-# is_show_video=False
+from UART import VisionData_t  # 电控通信
+from chase_sender import EnemyVisionSender  # 导航通信
 
 ROOT = os.getcwd()
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-PORT = -1
-BPS = 115200
-TIMEOUT = 5
 
-# communication
-vision = VisionData_t(PORT, BPS, TIMEOUT)
-sender = EnemyVisionSender(target_ip="192.168.1.5", target_port=8964)
+def camera_process(shared_buf, shared_shape, frame_ready):
+    print("Camera type:", cameraType, " , ID:", cameraID)
+    try:
+        camera = InitCamera(cameraType)
+        print(cameraID, "finish init")
+        fail_count = 0
+        while True:
+            ret, orig_frame = camera.get_photo()
+            if not ret:
+                fail_count += 1
+                time.sleep(0.01)
+                if fail_count > 15:
+                    print(
+                        "[Camera Process] 连续 15 次读取失败，相机失去响应，进程主动自杀以强制触发操作系统的物理重置...")
+                    # 尝试柔性释放资源
+                    if hasattr(camera, '__del__'):
+                        camera.__del__()
+                    time.sleep(0.3)
+                    # 强行终止当前进程，内核会自动回收所有被卡死的 C++ 句柄和底层内库状态
+                    sys.exit(1)
+                continue
 
-# 初始化3D绘图
-if is_show_3d:
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_xlim(-3, 3)
-    ax.set_ylim(-0.5, 3)
-    ax.set_zlim(0, 2)
-    plt.ion()
-    plt.show()
+            # 成功拿流，清空错误计数
+            fail_count = 0
 
+            if camera_flip:
+                orig_frame = cv2.flip(orig_frame, -1)
 
-def update_3d_fig(pre_amror):
-    plt.cla()
-    # 提取数据
-    x, y, z, yaw, r = pre_amror.x, pre_amror.y, pre_amror.z, pre_amror.yaw, 0.26
-
-    cx = x + r * np.cos(yaw)
-    cy = y
-    cz = z + r * np.sin(yaw)
-
-    for i in range(3):
-        angle = yaw + (i + 1) * np.pi / 2
-        x_i = cx - r * np.cos(angle)
-        y_i = cy
-        z_i = cz - r * np.sin(angle)
-        ax.scatter(x_i, z_i, y_i, c='red', s=50, label='Armor Point')
-
-    # 绘制装甲板点和圆心
-    ax.scatter(0, 0, 0, c='green', s=50, label='Car Point')
-    ax.scatter(x, z, y, c='red', s=50, label='Armor Point')
-    ax.scatter(cx, cz, cy, c='blue', s=50, marker='x', label='Circle Center')
-
-    ax.set_xlim(-3, 3)
-    ax.set_ylim(-0.5, 3)
-    ax.set_zlim(0, 2)
-
-    plt.pause(0.0001)
-    plt.draw()
+            # 极速内存拷贝：利用零拷贝机制(Zero-Copy)通过内存连续分配更新
+            shape = orig_frame.shape
+            shared_shape[0], shared_shape[1], shared_shape[2] = shape
+            mp_array_np = np.frombuffer(shared_buf, dtype=np.uint8)
+            mp_array_np[:orig_frame.nbytes] = orig_frame.ravel()
+            frame_ready.set()  # 唤醒推理进程
+    except Exception as e:
+        print(f"[Camera Process] 相机底层异常/掉线断开: {e}，正在执行进程级重启...")
+        sys.exit(1)
 
 
-def write1(x, y, z):
-    with open('data.txt', 'a') as file:
-        file.write(f"{x} {y} {z}\n")
+def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
+    print("Inference process started...")
 
-
-def run():
-    # 初始化相机类
-    print("Camera type:", cameraType, "    ID:", cameraID)
-    camera = InitCamera(cameraType)
-    print(cameraID, "init success.")
     if used_yolo:
-        # 初始化模型推断类
-        print("model:", model_path + model_name, "   use_cuda:", CUDA)
-        armor_de = ArmorDetector(model_path, model_name, CUDA, friend_color)  # 我方颜色
-        print("armor detector init success.")
-        print("Troop type:", my_TroopType, "   Friend color:", friend_color)
-        print("Is show video:", is_show_video, "   Save video times:", save_video_time)
+        print("model:", model_name)
+        armor_de = ArmorDetector(model_path, model_name, friend_color)
+        print("Armor detector init success")
+        print("Troop type:", my_TroopType, " , Friend color:", friend_color)
+        print("Is show video:", is_show_video, " , Save video times:", save_video_time)
     else:
-        # 初始化CV类
         armor_de = armor_getter(friend_color)
-    # 初始化灯条解算类
-    light_pos = LightDetector()
-    # 初始化PnP解算类
+
+    light_pos = LightDetector()  # 灯条解算
     pnp_solver = PnPSolver()
-    # 初始化目标选择类
     target_selector = TargetSelector()
-    # #初始化预测类
     tra = Tracker()
 
-    t = time.time()  # 初始化时间
+    t = time.time()
     time1 = time.time()
     cnt = 0
     last_vision_yaw = 0
+    video_time_limit = save_video_time
 
-    if save_video_time > 0:
-        output_file = time.strftime("%Y%m%d_%H%M%S") + "_output.mp4"  # 导出文件名为时间
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 视频编码器（MP4格式）
-        fps = 30  # 帧率
-        ret, orig_frame = camera.get_photo()
-        frame_size = (orig_frame.shape[1], orig_frame.shape[0])  # 视频帧大小（宽度, 高度）
-        video_writer = cv2.VideoWriter(output_file, fourcc, fps, frame_size)
+    # 阻塞等待第一帧用于初始化 VideoWriter
+    frame_ready.wait()
+    frame_ready.clear()
+    shape = (shared_shape[0], shared_shape[1], shared_shape[2])
+    size = shape[0] * shape[1] * shape[2]
+    orig_frame = np.frombuffer(shared_buf, dtype=np.uint8)[:size].reshape(shape).copy()
 
-    start_time = time.time()
+    if video_time_limit > 0:
+        start_time = time.time()
+        output_file = time.strftime("%Y%m%d_%H%M%S") + "_output.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fps_video = 30
+        frame_size = (orig_frame.shape[1], orig_frame.shape[0])
+        video_writer = cv2.VideoWriter(output_file, fourcc, fps_video, frame_size)
+    else:
+        start_time = time.time()
+
     armor = None
     predict_armor = None
     predicted_armor_yaw = 0
 
     print("Start working...")
     while True:
-        # 读取视频流的一帧
-        ret, orig_frame = camera.get_photo()
-        if camera_flip:
-            orig_frame = cv2.flip(orig_frame, -1)
-        if not ret:
-            continue
+        # 极速读取跨进程共享状态 (绕过内核锁带来的性能激增)
+        # 索引: 0:yaw, 1:pitch, 2:cmd_id
+        curr_yaw = state_arr[0]
+        curr_pitch = state_arr[1]
+        curr_cmd_id = int(state_arr[2])
 
-        detected_point = []  # 初始化装甲板中心点结果列表
+        detected_point = []
         if used_yolo:
             all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
         else:
-            ret, all_detect_armor, out_img = armor_de.get_armors_by_img(orig_frame)
-        # print(tra.state)
+            ret_flag, all_detect_armor, out_img = armor_de.get_armors_by_img(orig_frame)
+
         is_find = False
 
-        for detected_armor_box in all_detect_armor:  # 遍历所有检测到的装甲板
+        # 遍历所有检测到的装甲板框，进行灯条提取和PnP解算，得到装甲板中心点的3D坐标
+        for detected_armor_box in all_detect_armor:
             if used_yolo:
-                # 提取灯条角点
                 ret_detected, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor_box,
                                                                                        out_img)
             else:
                 ret_detected = True
                 detected_armor = detected_armor_box
-            if ret_detected:  # 如果灯条角点提取成功
-                # 计算装甲板中心3D坐标
-                ret_pnp, armor, out_img = pnp_solver.get_armor_target(detected_armor, out_img, vision.pitch, vision.yaw)
-                if ret_pnp:  # 如果PnP解算成功, 将装甲板中心点添加到结果列表
-                    detected_point.append(armor)
 
-        cv2.putText(out_img,
-                    f"receive yaw:{vision.yaw * 180 / math.pi:<9.3f} pitch:{vision.pitch * 180 / math.pi:<9.3f} ",
-                    (50, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
+            if ret_detected:
+                ret_pnp, armor_pnp, out_img = pnp_solver.get_armor_target(detected_armor, out_img, curr_pitch, curr_yaw)
+                if ret_pnp:
+                    detected_point.append(armor_pnp)
+
+        if is_show_video:
+            cv2.putText(out_img,
+                        f"receive yaw:{curr_yaw * 180 / math.pi:<9.3f} pitch:{curr_pitch * 180 / math.pi:<9.3f} ",
+                        (50, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
 
         if len(detected_point) > 0:
-            # 选择最佳目标
             armor = target_selector.select_best_target(detected_point)
-            if armor is None:
-                continue
-            # 标记显示识别到的装甲板
-            if used_predict:
-                found_pos2d = camera2xy(gimbal2camera(rotate_around_y(armor.gimbal_pos, -vision.yaw), vision.pitch))
-            else:
-                found_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
-            cv2.circle(out_img, found_pos2d, 11, (0, 200, 200), 4)
-            ax, ay, az = armor.gimbal_pos
+            if armor is not None:
+                if used_predict:
+                    found_pos2d = camera2xy(gimbal2camera(rotate_around_y(armor.gimbal_pos, -curr_yaw), curr_pitch))
+                else:
+                    found_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, curr_pitch))
+                if is_show_video:
+                    cv2.circle(out_img, found_pos2d, 11, (0, 200, 200), 4)
+                ax, ay, az = armor.gimbal_pos
 
-            cv2.putText(out_img,
-                        f"detecting x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{armor.yaw * 180.0 / math.pi:<9.3f}",
-                        (50, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
+                if is_show_video:
+                    cv2.putText(out_img,
+                                f"detecting x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{armor.yaw * 180.0 / math.pi:<9.3f}",
+                                (50, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
 
-            is_find = True
-            # print(armor)
-            t_n = time.time()
+                is_find = True
+                t_n = time.time()
 
-            # 初始化跟踪器
+                if tra.state == TracState.LOST:
+                    tra.initial(armor)
+                    t = t_n
+                else:
+                    predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, curr_pitch))
+                    if is_show_video:
+                        cv2.circle(out_img, predicted_pos2d, 14, (174, 29, 128), 4)
+                    dt = t_n - t
+                    predict_armor, out_img = tra.update(armor, dt, out_img)
+                    t = t_n
 
-            if tra.state == TracState.LOST:
-                tra.initial(armor)
-                t = t_n
-                continue
-            # ///////////////////////////
-            predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
-            cv2.circle(out_img, predicted_pos2d, 14, (174, 29, 128), 4)
-            # ///////////////////
-            # 更新跟踪器
-            dt = t_n - t
-            predict_armor, out_img = tra.update(armor, dt, out_img)
-            t = t_n
-
-            # 使用预测结果
-            if predict_armor is not None:
-                predicted_armor_yaw = predict_armor.yaw
-                # update_3d_fig(current)
-            else:
-                continue
+                    if predict_armor is not None:
+                        predicted_armor_yaw = predict_armor.yaw
         else:
-            target_selector.add_empty_entry()  # 更新历史记录
+            target_selector.add_empty_entry()
 
-        # 处理目标丢失的情况
         if not is_find and tra.state != TracState.LOST:
             t_n = time.time()
             dt = t_n - t
@@ -213,112 +184,202 @@ def run():
             t = t_n
 
         if tra.state == TracState.TRACKING:
-            last_vision_yaw = vision.yaw
+            last_vision_yaw = curr_yaw
 
-        # 处理跟踪状态下的目标
         if tra.state == TracState.TRACKING or tra.state == TracState.TEMP_LOST:
-            angle_pitch = vision.pitch
-            if used_predict:
-                re_transform_pos = rotate_around_y(predict_armor.gimbal_pos, -vision.yaw)
+            angle_pitch = curr_pitch
+            if used_predict and predict_armor is not None:
+                re_transform_pos = rotate_around_y(predict_armor.gimbal_pos, -curr_yaw)
                 predict_armor.gimbal_pos = re_transform_pos
-            else:
+            elif not used_predict and armor is not None:
                 predict_armor = armor
-            # 用运动云台坐标系计算弹道
-            change_angle = ballistic_compensation(predict_armor.gimbal_pos)
-            ax, ay, az = predict_armor.gimbal_pos
 
-            cv2.putText(out_img,
-                        f"predicted x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{predicted_armor_yaw * 180.0 / math.pi:<9.3f}",
-                        (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
+            if predict_armor is not None:
+                # 用运动云台坐标系计算弹道
+                change_angle = ballistic_compensation(predict_armor.gimbal_pos)
+                ax, ay, az = predict_armor.gimbal_pos
 
-            if az < 0.1:  # 距离过近忽略
-                continue
-            if str(math.atan(ax / az)) == "nan":
-                continue
+                if is_show_video:
+                    cv2.putText(out_img,
+                                f"predicted x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{predicted_armor_yaw * 180.0 / math.pi:<9.3f}",
+                                (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
 
-            # 计算发电控的pitch
-            if send_radian_diff:
-                angle_yoz = yaw_buffer_factor * (angle_pitch - change_angle)  # 发缓冲差值弧度
-            else:
-                angle_yoz = yaw_buffer_factor * (angle_pitch - change_angle) + angle_pitch  # 发缓冲定值弧度
-            # 计算发电控的yaw
-            if send_radian_diff:
-                angle_xoz = math.atan(ax / az) * pitch_buffer_factor  # 发缓冲差值弧度
-            else:
-                angle_xoz = math.atan(ax / az) * pitch_buffer_factor + vision.yaw  # 发缓冲定值弧度
+                if az >= 0.1:
+                    # 计算发电控的弧度
+                    angle_xoz = math.atan2(ax, az) * yaw_buffer_factor
+                    angle_yoz = pitch_buffer_factor * (angle_pitch - change_angle)
+                    if not send_radian_diff:
+                        angle_xoz += curr_yaw
+                        angle_yoz += angle_pitch
+                    # 弧度归一化 [-pi, pi]
+                    angle_xoz = (angle_xoz + math.pi) % (2 * math.pi) - math.pi
+                    angle_yoz = (angle_yoz + math.pi) % (2 * math.pi) - math.pi
 
-            # 防止角度超限
-            while angle_xoz < -math.pi:
-                angle_xoz += 2 * math.pi
-            while angle_xoz > math.pi:
-                angle_xoz -= 2 * math.pi
+                    if tra.state == TracState.TEMP_LOST:
+                        angle_xoz = angle_xoz - (curr_yaw - last_vision_yaw)
 
-            if tra.state == TracState.TEMP_LOST:
-                angle_xoz = angle_xoz - (vision.yaw - last_vision_yaw)
+                    # 是否锁上目标判断逻辑
+                    miss_yaw = miss_yaw_angle * math.pi / 180.0 / yaw_buffer_factor
+                    miss_pitch = miss_pitch_angle * math.pi / 180.0 / pitch_buffer_factor
+                    dy = angle_xoz if send_radian_diff else (angle_xoz - curr_yaw)
+                    dp = angle_yoz if send_radian_diff else (angle_yoz - curr_pitch)
+                    lock = 0 if abs(dy) > miss_yaw or abs(dp) > miss_pitch else 1
 
-            # 是否锁上目标判断逻辑
-            miss_yaw = miss_yaw_angle * math.pi / 180 / yaw_buffer_factor
-            miss_pitch = miss_pitch_angle * math.pi / 180 / pitch_buffer_factor
-            if send_radian_diff:
-                if abs(angle_xoz) > miss_yaw or abs(angle_yoz) > miss_pitch:
-                    lock = 0
-                else:
-                    lock = 1
-            else:
-                if abs(angle_xoz - vision.yaw) > miss_yaw or abs(angle_yoz - vision.pitch) > miss_pitch:
-                    lock = 0
-                else:
-                    lock = 1
+                    # 将计算结果写入共享无锁数组
+                    # 索引: 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y
+                    state_arr[3] = float(angle_xoz)
+                    state_arr[4] = float(angle_yoz)
+                    state_arr[5] = float(math.sqrt(az * az + ax * ax))
+                    state_arr[6] = 1.0
+                    state_arr[7] = float(lock)
+                    state_arr[8] = 0.0
 
-            vision.set_data(angle_xoz, angle_yoz, math.sqrt(az * az + ax * ax), 1, lock)  # 发给电控
-            sender.update_data(is_detected=True, rel_x=az, rel_y=ax)  # 发给导航
+                    if send_chase:
+                        state_arr[9] = 1.0
+                        state_arr[10] = float(az)
+                        state_arr[11] = float(ax)
 
-            # 标记显示预测后的装甲板
-            # predicted_pos2d = camera2xy(gimbal2camera(armor.gimbal_pos, vision.pitch))
-            # cv2.circle(out_img, predicted_pos2d, 14, (174, 29, 128), 4)
-
-            cv2.putText(out_img,
-                        f"sending yaw:{angle_xoz * 180 / math.pi:<9.3f} pitch :{angle_yoz * 180 / math.pi:<9.3f} lock:{lock}",
-                        (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
-            # print(f"yaw旋转到{angle_xoz * 180 / math.pi}°,pitch旋转{angle_yoz * 180 / math.pi}°")
-            # vision.send()
+                    if is_show_video:
+                        cv2.putText(out_img,
+                                    f"sending yaw:{angle_xoz * 180 / math.pi:<9.3f} pitch :{angle_yoz * 180 / math.pi:<9.3f} lock:{lock}",
+                                    (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
         else:
-            vision.set_data(vision.yaw, 0, 0, 0, 0)  # 发给电控
-            sender.update_data(is_detected=False, rel_x=0, rel_y=0)  # 发给导航
+            offset_y, offset_p = (0.0, 0.0) if send_radian_diff else (float(curr_yaw), float(curr_pitch))
+            state_arr[3], state_arr[4], state_arr[5] = float(offset_y), float(offset_p), 0.0
+            state_arr[6], state_arr[7], state_arr[8] = 0.0, 0.0, 0.0
 
-        # cv2.putText(out_img,
-        #             f"received pitch:{(vision.pitch * 180 / math.pi) if vision.pitch is not None else 0:<9.3f} yaw:{(vision.yaw * 180 / math.pi) if vision.yaw is not None else 0:<9.3f} ",
-        #             (50, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
+            if send_chase:
+                state_arr[9], state_arr[10], state_arr[11] = 0.0, 0.0, 0.0
+        if is_show_video:
+            cv2.putText(out_img, f"state:{tra.state},cmd_id:{curr_cmd_id}", (50, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 150, 0), 2)
 
-        cv2.putText(out_img, f"state:{tra.state},cmid:{vision.CmdID}", (50, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 150, 0), 2)
-        if save_video_time > 0:
+        if video_time_limit > 0:
             video_writer.write(out_img)
 
-        # 显示图像和FPS计算
         if is_show_video:
             small_img = cv2.resize(out_img, (0, 0), fx=0.75, fy=0.75, interpolation=cv2.INTER_AREA)
             cv2.imshow("vision output", small_img)
             cv2.waitKey(1)
+
         cnt += 1
-        if cnt == 20:
-            fps = 20 / (time.time() - time1)
+        if cnt == 40:
+            fps = 40 / (time.time() - time1)
             time1 = time.time()
             cnt = 0
-            print("fps", fps)
+            print("fps:", round(fps, 3))
 
-        if 0 < save_video_time < time.time() - start_time:
+        if 0 < video_time_limit < time.time() - start_time:
             video_writer.release()
             cv2.destroyAllWindows()
-            camera.delete()
             print("video write to", output_file, "over")
-            break
+            video_time_limit = 0
+
+        # 请求下一帧，带超时容错机制
+        got_next_frame = False
+        while not got_next_frame:
+            if frame_ready.wait(timeout=0.5):
+                frame_ready.clear()
+                shape = (shared_shape[0], shared_shape[1], shared_shape[2])
+                size = shape[0] * shape[1] * shape[2]
+                orig_frame = np.frombuffer(shared_buf, dtype=np.uint8)[:size].reshape(shape).copy()
+                got_next_frame = True
+            else:
+                print("[Inference Process] 警告：超过 0.5s 未收到相机新帧，重置锁定位和指令...")
+                tra.state = TracState.LOST
+                state_arr[3], state_arr[4], state_arr[5] = 0.0, 0.0, 0.0
+                state_arr[6], state_arr[7], state_arr[8] = 0.0, 0.0, 0.0
+
+                if send_chase:
+                    state_arr[9], state_arr[10], state_arr[11] = 0.0, 0.0, 0.0
+                # 继续等待
 
 
 if __name__ == "__main__":
-    t1 = threading.Thread(target=vision.start)
-    t2 = threading.Thread(target=run)
-    t1.start()
-    t2.start()
-    sender.start(hz=50.0)
-    # run()
+    mp.set_start_method('spawn', force=True)  # 强制以 spawn 方式启动多进程（Jetson / CUDA 必须）
+
+    print("----- Debugging parameters -----")
+    print("is_sending_diff:", send_radian_diff)
+    print("yaw_buffer_factor:", yaw_buffer_factor)
+    print("pitch_buffer_factor:", pitch_buffer_factor)
+    print("miss_yaw_angle:", miss_yaw_angle)
+    print("miss_pitch_angle:", miss_pitch_angle)
+
+    # 与电控和导航的通信
+    vision = VisionData_t(baud_rate)
+    print("UART communication initialized. Baud rate:", baud_rate)
+    if send_chase:
+        sender = EnemyVisionSender(target_ip=send_target_ip, target_port=send_target_port)
+        print("Chase sending enabled. Target IP:", send_target_ip, " Target Port:", send_target_port)
+
+    import ctypes
+
+    # ========== 跨进程共享内存区 (彻底优化 IPC 通信) ==========
+    # 1. 消除 Queue，使用无锁多进程数组传递图像，免除 Pickle 开销
+    max_frame_bytes = 1920 * 1080 * 3  # 最大支持到 1080p
+    shared_frame_buf = mp.Array(ctypes.c_uint8, max_frame_bytes, lock=False)
+    shared_frame_shape = mp.Array('i', 3, lock=False)
+    frame_ready = mp.Event()
+
+    # 2. 消除 13 个带锁 mp.Value，使用无锁连续数组，完全避免内核态内核锁抢占开销
+    # [0:yaw, 1:pitch, 2:cmd_id, 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y, 12:reserved]
+    state_arr = mp.Array('d', 13, lock=False)
+
+    # 启动双核双进程：将 Camera 取流，和 推理计算 彻底隔离开，跑满多核并实现 Zero-Copy
+    p_camera = mp.Process(target=camera_process, args=(shared_frame_buf, shared_frame_shape, frame_ready))
+    p_inference = mp.Process(target=inference_process,
+                             args=(shared_frame_buf, shared_frame_shape, frame_ready, state_arr))
+    # 设置为守护模式
+    p_camera.daemon = True
+    p_inference.daemon = True
+
+    p_camera.start()
+    p_inference.start()
+
+
+    def process_monitor_loop(p_cam, buf, shape, evt):
+        # 看门狗守护线程
+        while True:
+            time.sleep(1.0)
+            if not p_cam.is_alive():
+                print("[看门狗_Monitor] 检测到相机取流进程已死亡/退出，正在操作系统层面彻底重启相机进程(重置句柄)...")
+                p_cam = mp.Process(target=camera_process, args=(buf, shape, evt))
+                p_cam.daemon = True
+                p_cam.start()
+
+
+    # 启动看门狗线程
+    watchdog_thread = threading.Thread(target=process_monitor_loop,
+                                       args=(p_camera, shared_frame_buf, shared_frame_shape, frame_ready), daemon=True)
+    watchdog_thread.start()
+
+
+    def comms_sync_loop():
+        # 微线程无锁同步：负责在主进程调度串口收发与状态共享
+        while True:
+            state_arr[0] = float(vision.yaw)
+            state_arr[1] = float(vision.pitch)
+            state_arr[2] = float(vision.CmdID)
+
+            vision.set_data(state_arr[3], state_arr[4], state_arr[5],
+                            int(state_arr[6]), int(state_arr[7]), int(state_arr[8]))
+
+            if send_chase:
+                sender.update_data(bool(state_arr[9]), state_arr[10], state_arr[11])
+
+            time.sleep(0.005)  # ~200Hz 数据交互帧率
+
+
+    # 启动主进程通讯同步协程
+    sync_thread = threading.Thread(target=comms_sync_loop, daemon=True)
+    sync_thread.start()
+
+    if send_chase:
+        sender.start(hz=50.0)
+
+    print("主进程载入 UART 循环接管...")
+    vision.start()  # 阻塞在读取
+
+    # 防护
+    p_camera.join()
+    p_inference.join()

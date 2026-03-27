@@ -35,7 +35,7 @@ def video_capture(capture_time=10000000000000):
         if 0 < capture_time < time.time() - start_time:
             video_writer.release()
             cv2.destroyAllWindows()
-            camera.delete()
+            camera.__del__()
             print("video write over")
             break
 
