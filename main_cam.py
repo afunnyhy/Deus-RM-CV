@@ -3,7 +3,6 @@ import sys
 import time
 import threading
 import multiprocessing as mp
-import queue
 
 from setting import *
 from all_function import *
@@ -25,7 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 
-def camera_process(frame_queue):
+def camera_process(shared_buf, shared_shape, frame_ready):
     print("Camera type:", cameraType, " , ID:", cameraID)
     try:
         camera = InitCamera(cameraType)
@@ -53,21 +52,18 @@ def camera_process(frame_queue):
             if camera_flip:
                 orig_frame = cv2.flip(orig_frame, -1)
 
-            # 维持 maxsize=1 的队列，保证推理时拿到的是最新的一帧（零延迟丢帧机制）
-            if frame_queue.full():
-                try:
-                    frame_queue.get_nowait()
-                except Exception:
-                    pass
-            frame_queue.put(orig_frame)
+            # 极速内存拷贝：利用零拷贝机制(Zero-Copy)通过内存连续分配更新
+            shape = orig_frame.shape
+            shared_shape[0], shared_shape[1], shared_shape[2] = shape
+            mp_array_np = np.frombuffer(shared_buf, dtype=np.uint8)
+            mp_array_np[:orig_frame.nbytes] = orig_frame.ravel()
+            frame_ready.set()  # 唤醒推理进程
     except Exception as e:
         print(f"[Camera Process] 相机底层异常/掉线断开: {e}，正在执行进程级重启...")
         sys.exit(1)
 
 
-def inference_process(frame_queue, shared_yaw, shared_pitch, shared_cmd_id,
-                      cmd_yaw, cmd_pitch, cmd_dist, cmd_target, cmd_lock, cmd_buff,
-                      nav_detected, nav_x, nav_y):
+def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
     print("Inference process started...")
 
     if used_yolo:
@@ -91,7 +87,11 @@ def inference_process(frame_queue, shared_yaw, shared_pitch, shared_cmd_id,
     video_time_limit = save_video_time
 
     # 阻塞等待第一帧用于初始化 VideoWriter
-    orig_frame = frame_queue.get()
+    frame_ready.wait()
+    frame_ready.clear()
+    shape = (shared_shape[0], shared_shape[1], shared_shape[2])
+    size = shape[0] * shape[1] * shape[2]
+    orig_frame = np.frombuffer(shared_buf, dtype=np.uint8)[:size].reshape(shape).copy()
 
     if video_time_limit > 0:
         start_time = time.time()
@@ -109,10 +109,11 @@ def inference_process(frame_queue, shared_yaw, shared_pitch, shared_cmd_id,
 
     print("Start working...")
     while True:
-        # 极速读取跨进程共享的状态变量 (UI和解算需要)
-        curr_yaw = shared_yaw.value
-        curr_pitch = shared_pitch.value
-        curr_cmd_id = shared_cmd_id.value
+        # 极速读取跨进程共享状态 (绕过内核锁带来的性能激增)
+        # 索引: 0:yaw, 1:pitch, 2:cmd_id
+        curr_yaw = state_arr[0]
+        curr_pitch = state_arr[1]
+        curr_cmd_id = int(state_arr[2])
 
         detected_point = []
         if used_yolo:
@@ -224,18 +225,19 @@ def inference_process(frame_queue, shared_yaw, shared_pitch, shared_cmd_id,
                     dp = angle_yoz if send_radian_diff else (angle_yoz - curr_pitch)
                     lock = 0 if abs(dy) > miss_yaw or abs(dp) > miss_pitch else 1
 
-                    # 将计算结果写入跨进程共享变量，触发发包
-                    cmd_yaw.value = angle_xoz
-                    cmd_pitch.value = angle_yoz
-                    cmd_dist.value = float(math.sqrt(az * az + ax * ax))
-                    cmd_target.value = 1
-                    cmd_lock.value = lock
-                    cmd_buff.value = 0
+                    # 将计算结果写入共享无锁数组
+                    # 索引: 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y
+                    state_arr[3] = float(angle_xoz)
+                    state_arr[4] = float(angle_yoz)
+                    state_arr[5] = float(math.sqrt(az * az + ax * ax))
+                    state_arr[6] = 1.0
+                    state_arr[7] = float(lock)
+                    state_arr[8] = 0.0
 
                     if send_chase:
-                        nav_detected.value = 1
-                        nav_x.value = float(az)
-                        nav_y.value = float(ax)
+                        state_arr[9] = 1.0
+                        state_arr[10] = float(az)
+                        state_arr[11] = float(ax)
 
                     if is_show_video:
                         cv2.putText(out_img,
@@ -243,17 +245,11 @@ def inference_process(frame_queue, shared_yaw, shared_pitch, shared_cmd_id,
                                     (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
         else:
             offset_y, offset_p = (0.0, 0.0) if send_radian_diff else (float(curr_yaw), float(curr_pitch))
-            cmd_yaw.value = offset_y
-            cmd_pitch.value = offset_p
-            cmd_dist.value = 0.0
-            cmd_target.value = 0
-            cmd_lock.value = 0
-            cmd_buff.value = 0
+            state_arr[3], state_arr[4], state_arr[5] = float(offset_y), float(offset_p), 0.0
+            state_arr[6], state_arr[7], state_arr[8] = 0.0, 0.0, 0.0
 
             if send_chase:
-                nav_detected.value = 0
-                nav_x.value = 0.0
-                nav_y.value = 0.0
+                state_arr[9], state_arr[10], state_arr[11] = 0.0, 0.0, 0.0
         if is_show_video:
             cv2.putText(out_img, f"state:{tra.state},cmd_id:{curr_cmd_id}", (50, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 150, 0), 2)
@@ -279,62 +275,60 @@ def inference_process(frame_queue, shared_yaw, shared_pitch, shared_cmd_id,
             print("video write to", output_file, "over")
             video_time_limit = 0
 
-        # 请求下一帧，无缝衔接，带超时容错机制（防止相机死掉导致死等）
+        # 请求下一帧，带超时容错机制
         got_next_frame = False
         while not got_next_frame:
-            try:
-                orig_frame = frame_queue.get(timeout=0.5)
+            if frame_ready.wait(timeout=0.5):
+                frame_ready.clear()
+                shape = (shared_shape[0], shared_shape[1], shared_shape[2])
+                size = shape[0] * shape[1] * shape[2]
+                orig_frame = np.frombuffer(shared_buf, dtype=np.uint8)[:size].reshape(shape).copy()
                 got_next_frame = True
-            except queue.Empty:
+            else:
                 print("[Inference Process] 警告：超过 0.5s 未收到相机新帧，重置锁定位和指令...")
-                # 让机器人进入安全/未识别状态，重置所有发往电控的跨进程变量，停止跟随
                 tra.state = TracState.LOST
-                cmd_yaw.value, cmd_pitch.value, cmd_dist.value = 0.0, 0.0, 0.0
-                cmd_target.value, cmd_lock.value, cmd_buff.value = 0, 0, 0
+                state_arr[3], state_arr[4], state_arr[5] = 0.0, 0.0, 0.0
+                state_arr[6], state_arr[7], state_arr[8] = 0.0, 0.0, 0.0
 
                 if send_chase:
-                    nav_detected.value = 0
-                    nav_x.value, nav_y.value = 0.0, 0.0
-                # 让循环继续堵在等待直到相机恢复
+                    state_arr[9], state_arr[10], state_arr[11] = 0.0, 0.0, 0.0
+                # 继续等待
 
 
 if __name__ == "__main__":
     mp.set_start_method('spawn', force=True)  # 强制以 spawn 方式启动多进程（Jetson / CUDA 必须）
 
+    print("----- Debugging parameters -----")
+    print("is_sending_diff:", send_radian_diff)
+    print("yaw_buffer_factor:", yaw_buffer_factor)
+    print("pitch_buffer_factor:", pitch_buffer_factor)
+    print("miss_yaw_angle:", miss_yaw_angle)
+    print("miss_pitch_angle:", miss_pitch_angle)
+
     # 与电控和导航的通信
     vision = VisionData_t(baud_rate)
+    print("UART communication initialized. Baud rate:", baud_rate)
     if send_chase:
         sender = EnemyVisionSender(target_ip=send_target_ip, target_port=send_target_port)
         print("Chase sending enabled. Target IP:", send_target_ip, " Target Port:", send_target_port)
 
-    # ========== 跨进程共享内存区 ==========
-    # 图像队列（保证零延迟）
-    frame_queue = mp.Queue(maxsize=1)
+    import ctypes
 
-    # UART接收状态 -> 推理进程
-    shared_yaw = mp.Value('d', 0.0)
-    shared_pitch = mp.Value('d', 0.0)
-    shared_cmd_id = mp.Value('i', 0)
+    # ========== 跨进程共享内存区 (彻底优化 IPC 通信) ==========
+    # 1. 消除 Queue，使用无锁多进程数组传递图像，免除 Pickle 开销
+    max_frame_bytes = 1920 * 1080 * 3  # 最大支持到 1080p
+    shared_frame_buf = mp.Array(ctypes.c_uint8, max_frame_bytes, lock=False)
+    shared_frame_shape = mp.Array('i', 3, lock=False)
+    frame_ready = mp.Event()
 
-    # 推理进程 -> UART发送指令
-    cmd_yaw = mp.Value('d', 0.0)
-    cmd_pitch = mp.Value('d', 0.0)
-    cmd_dist = mp.Value('d', 0.0)
-    cmd_target = mp.Value('i', 0)
-    cmd_lock = mp.Value('i', 0)
-    cmd_buff = mp.Value('i', 0)
+    # 2. 消除 13 个带锁 mp.Value，使用无锁连续数组，完全避免内核态内核锁抢占开销
+    # [0:yaw, 1:pitch, 2:cmd_id, 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y, 12:reserved]
+    state_arr = mp.Array('d', 13, lock=False)
 
-    # 推理进程 -> 导航发送指令
-    nav_detected = mp.Value('i', 0)
-    nav_x = mp.Value('d', 0.0)
-    nav_y = mp.Value('d', 0.0)
-
-    # 启动双核双进程：将 Camera 取流，和 推理计算 彻底隔离开，打破 GIL，跑满多核
-    p_camera = mp.Process(target=camera_process, args=(frame_queue,))
+    # 启动双核双进程：将 Camera 取流，和 推理计算 彻底隔离开，跑满多核并实现 Zero-Copy
+    p_camera = mp.Process(target=camera_process, args=(shared_frame_buf, shared_frame_shape, frame_ready))
     p_inference = mp.Process(target=inference_process,
-                             args=(frame_queue, shared_yaw, shared_pitch, shared_cmd_id,
-                                   cmd_yaw, cmd_pitch, cmd_dist, cmd_target, cmd_lock, cmd_buff,
-                                   nav_detected, nav_x, nav_y))
+                             args=(shared_frame_buf, shared_frame_shape, frame_ready, state_arr))
     # 设置为守护模式
     p_camera.daemon = True
     p_inference.daemon = True
@@ -343,34 +337,35 @@ if __name__ == "__main__":
     p_inference.start()
 
 
-    def process_monitor_loop(p_cam, f_queue):
-        # 看门狗守护线程：专门监视相机进程存活状态，如果进程死亡则重新派生新生进程
+    def process_monitor_loop(p_cam, buf, shape, evt):
+        # 看门狗守护线程
         while True:
             time.sleep(1.0)
             if not p_cam.is_alive():
                 print("[看门狗_Monitor] 检测到相机取流进程已死亡/退出，正在操作系统层面彻底重启相机进程(重置句柄)...")
-                p_cam = mp.Process(target=camera_process, args=(f_queue,))
+                p_cam = mp.Process(target=camera_process, args=(buf, shape, evt))
                 p_cam.daemon = True
                 p_cam.start()
 
 
     # 启动看门狗线程
-    watchdog_thread = threading.Thread(target=process_monitor_loop, args=(p_camera, frame_queue), daemon=True)
+    watchdog_thread = threading.Thread(target=process_monitor_loop,
+                                       args=(p_camera, shared_frame_buf, shared_frame_shape, frame_ready), daemon=True)
     watchdog_thread.start()
 
 
     def comms_sync_loop():
-        # 微线程极速同步：负责将 UART 串口数据搬运进跨进程 Value
+        # 微线程无锁同步：负责在主进程调度串口收发与状态共享
         while True:
-            shared_yaw.value = vision.yaw
-            shared_pitch.value = vision.pitch
-            shared_cmd_id.value = vision.CmdID
+            state_arr[0] = float(vision.yaw)
+            state_arr[1] = float(vision.pitch)
+            state_arr[2] = float(vision.CmdID)
 
-            vision.set_data(cmd_yaw.value, cmd_pitch.value, cmd_dist.value,
-                            cmd_target.value, cmd_lock.value, cmd_buff.value)
+            vision.set_data(state_arr[3], state_arr[4], state_arr[5],
+                            int(state_arr[6]), int(state_arr[7]), int(state_arr[8]))
 
             if send_chase:
-                sender.update_data(bool(nav_detected.value), nav_x.value, nav_y.value)
+                sender.update_data(bool(state_arr[9]), state_arr[10], state_arr[11])
 
             time.sleep(0.005)  # ~200Hz 数据交互帧率
 

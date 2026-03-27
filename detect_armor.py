@@ -1,8 +1,8 @@
 import os
-import torch
 from ultralytics import YOLO
+import torch
 from all_type import *
-import cv2
+from setting import is_show_video
 
 
 class ArmorDetector:  # 模型推理类
@@ -63,14 +63,16 @@ class ArmorDetector:  # 模型推理类
                 if color_type != detect_color:
                     continue
                 x1, y1, x2, y2 = map(int, xyxys[i])
-
-                # 绘制边界框
-                color_print = (255, 0, 0) if color_type == Color.BLUE else (0, 0, 255)
-                cv2.rectangle(out_img, (x1, y1), (x2, y2), color_print, 2)
-                cv2.putText(out_img, f"{label_name} {confidence:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                            color_print, 2)
                 detect_armor = ArmorPlate([x1, y1, x2, y2], color_type, troop_type, confidence)
                 detected.append(detect_armor)
 
+                if is_show_video:
+                    # 绘制边界框
+                    color_print = (255, 0, 0) if color_type == Color.BLUE else (0, 0, 255)
+                    cv2.rectangle(out_img, (x1, y1), (x2, y2), color_print, 2)
+                    cv2.putText(out_img, f"{label_name} {confidence:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                color_print, 2)
+
+        # 按照置信度排序
         detected.sort(key=lambda x: x.confident, reverse=True)
         return detected, out_img
