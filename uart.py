@@ -3,7 +3,7 @@ import struct
 import time
 
 
-class VisionData_t:
+class UartCommunication:
     def __init__(self, BPS, TIMEOUT=5, PORT=-1):
         self.PORT = PORT
         self.BPS = BPS
@@ -33,7 +33,8 @@ class VisionData_t:
 
         self.uart = self.open_uart(self.PORT, self.BPS, self.TIMEOUT)
 
-    def open_uart(self, port, bps, timeout):
+    @staticmethod
+    def open_uart(port, bps, timeout):
         """自动寻找并打开串口，并清空历史积压数据"""
         uart = None
         if int(port) < 0:
@@ -152,7 +153,6 @@ class VisionData_t:
         self.identify_buff = buff
 
     def start(self):
-        print("开始高速接收...")
         self.start_flag = True
         while self.start_flag:
             self.get()

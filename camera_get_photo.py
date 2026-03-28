@@ -9,13 +9,13 @@ class InitCamera:  # 初始化相机
         if camera_id == CameraType.DAHENG:
             from dhcamera.GxVideoCupture import GxVideoCupture  # 大恒相机
             self.cap = GxVideoCupture(exposure_time=4000, gain=10, Binning=[2, 2], BinningMode=[0, 0])
-            time.sleep(0.3)
+            time.sleep(0.2)
             self.cap_init_flag = True
         elif camera_id == CameraType.HAIKANG:
-            from hkcamera.test import HkCaptureVedio  # 海康相机
-            self.cap = HkCaptureVedio(exposure_time=5000, gain=10)
+            from hkcamera.HkVideoCupture import HkCaptureVideo  # 海康相机
+            self.cap = HkCaptureVideo(exposure_time=5000, gain=10)
             self.cap.start_grabbing()
-            time.sleep(0.3)
+            time.sleep(0.2)
             self.cap_init_flag = True
 
     def get_photo(self):

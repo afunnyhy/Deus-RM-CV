@@ -78,7 +78,7 @@ def camera2xy(pos):
 
 # 计算弹道补偿角度,即pitch角度，水平为0度
 def ballistic_compensation(pos, projectile_velocity=defaults_bullet_speed):  # 默认弹丸速度23m/s
-    g = 9.83  # 上海的重力加速度
+    g = 9.794  # 上海的重力加速度
     # 使用云台坐标系下的坐标计算补偿角度
     v2 = projectile_velocity * projectile_velocity
     x, y, z = pos  # 提取目标点的坐标值，x为水平向右方向，y为竖直向上方向，z为深度向外(向目标)方向
