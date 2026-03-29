@@ -1,9 +1,9 @@
 """
-通用函数
+坐标变换相关函数
 """
 import math
 import numpy as np
-from setting import origin_gimbal, camera_matrix, defaults_bullet_speed
+from setting import origin_gimbal, camera_matrix
 
 
 # 将世界坐标系转换为相机坐标系，pos为世界坐标系下的坐标，rmat为旋转矩阵，tvec为平移向量
@@ -74,27 +74,6 @@ def camera2xy(pos):
     y1 = pixel_coords[1][0]
     pos2 = [x1, y1]
     return pos2
-
-
-# 计算弹道补偿角度,即pitch角度，水平为0度
-def ballistic_compensation(pos, projectile_velocity=defaults_bullet_speed):  # 默认弹丸速度23m/s
-    g = 9.794  # 上海的重力加速度
-    # 使用云台坐标系下的坐标计算补偿角度
-    v2 = projectile_velocity * projectile_velocity
-    x, y, z = pos  # 提取目标点的坐标值，x为水平向右方向，y为竖直向上方向，z为深度向外(向目标)方向
-    d2 = x * x + z * z
-    d = math.sqrt(d2)
-    delta_theta = v2 * v2 - 2 * g * y * v2 - g * g * d2
-    if delta_theta < 0:
-        return 0
-    tan_theta1 = (v2 - math.sqrt(delta_theta)) / (g * d)
-    tan_theta2 = (v2 + math.sqrt(delta_theta)) / (g * d)
-    theta1 = math.atan(tan_theta1)
-    theta2 = math.atan(tan_theta2)
-    if abs(theta1) <= abs(theta2):
-        return theta1
-    else:
-        return theta2
 
 
 # 从一个旋转向量（rvec）计算对应的旋转矩阵，并从中提取偏航角（yaw）

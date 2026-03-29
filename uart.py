@@ -25,7 +25,7 @@ class UartCommunication:
         # 接收的数据 (Rx)
         self.roll = 0.0
         self.pitch = 0.0
-        self.speed = 25.0
+        self.speed = 0.0
         self.yaw = 0.0
 
         self.start_flag = False
