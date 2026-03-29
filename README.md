@@ -16,22 +16,28 @@ ZJUT Deus team RoboMaster CV and auto aim code
 
 ```text
 Deus-RM-CV/
-├── main_cam.py             # 主运行程序（多进程调度中心）
-├── setting.py              # 全局配置参数（兵种、相机内参、波特率等）
-├── UART.py                 # 串口通信模块（与下位机交互）
-├── detect_armor.py         # 装甲板检测类（模型推理入口）
-├── pnp_solver.py           # PnP 位姿解算法
-├── pre_armor.py            # 目标跟踪与 EKF 预测逻辑
+├── main_cam.py               # 主运行程序（多进程调度中心）
+├── setting.py                # 全局配置参数（兵种、相机内参、波特率等）
+├── uart.py                   # 串口通信模块（与控制板交互）
+├── chase_sender.py           # 与导航联动的 UDP 通信发送端
+├── detect_armor.py           # 装甲板检测类（深度学习推理入口）
+├── get_armor_points_cv.py    # 传统 OpenCV 视觉装甲板检测算法
+├── pnp_solver.py             # PnP 位姿解算法
+├── coord_converter.py        # 坐标系转换工具（相机、云台、世界坐标）
+├── pre_armor.py              # 目标跟踪与 EKF 预测逻辑
 ├── extended_kalman_filter.py # EKF 算法底层实现
-├── armor_chose.py          # 目标选择与打击策略决策
-├── light_detector.py       # 灯条提取与角点微调
-├── all_type.py             # 通用数据类型与枚举定义
-├── camera_get_photo.py     # 相机抽象类与初始化逻辑
-├── hkcamera/               # 海康相机驱动封装
-├── dhcamera/               # 大恒相机驱动封装
-├── models/                 # 存放训练好的模型文件 (.engine / .onnx)
-├── pt2engine.py            # 工具：导出 TensorRT 模型引擎
-└── auto_label.py           # 工具：自动化数据集标注
+├── armor_chose.py            # 目标选择与打击策略决策
+├── ballistic_compensation.py # 弹道补偿计算（空气阻力与重力下坠）
+├── light_detector.py         # 灯条提取与角点微调
+├── all_type.py               # 通用数据类型与枚举定义
+├── camera_get_photo.py       # 相机抽象类与初始化逻辑
+├── video_capture.py          # 视频采集与保存工具
+├── test_camera.py            # 摄像头辅助测试与参数调节工具
+├── hkcamera/                 # 海康相机驱动封装
+├── dhcamera/                 # 大恒相机驱动封装
+├── models/                   # 存放训练好的模型文件 (.engine .onnx .pt)
+├── pt2engine.py              # 工具：导出 TensorRT 模型引擎
+└── auto_label.py             # 工具：自动化数据集标注
 ```
 
 ## 快速开始

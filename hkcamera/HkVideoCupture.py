@@ -43,7 +43,7 @@ def ToHexStr(num):
     return hexStr
 
 
-class HkCaptureVedio:
+class HkCaptureVideo:
     def __init__(self, dev_num: int = 1, exposure_time: float = 5000, gain: float = 10, size=None, Binning=0,
                  balancewiteauto=1):
         self.cam = MvCamera()
@@ -180,7 +180,7 @@ class HkCaptureVedio:
         self.data = (c_ubyte * (1024 * 1024 * 5))()  # 假定最大帧大小为5MB
 
     def read(self):
-        ret = self.cam.MV_CC_GetOneFrameTimeout(self.data, len(self.data), self.data_size, 1000)
+        ret = self.cam.MV_CC_GetOneFrameTimeout(self.data, len(self.data), self.data_size, 1500)
         if ret == 0:
             frame = np.frombuffer(self.data, dtype=np.uint8, count=self.data_size.nFrameLen)
             frame = frame.reshape((self.data_size.nHeight, self.data_size.nWidth, 3))  # 转换为图像格式
@@ -198,7 +198,7 @@ class HkCaptureVedio:
 
 
 if __name__ == "__main__":
-    cam = HkCaptureVedio(exposure_time=5000, gain=16)
+    cam = HkCaptureVideo(exposure_time=5000, gain=16)
     cam.start_grabbing()
     time_start = time.time()
     cnt = 0

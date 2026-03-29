@@ -1,6 +1,6 @@
 import math
 import cv2
-from all_function import *
+from coord_converter import *
 from all_type import *
 from setting import camera_matrix, dist_coefficients, used_predict
 
@@ -114,10 +114,7 @@ class PnPSolver:
         :param angle: 云台与相机之间的俯仰角(弧度)，类型为 `float`。
         """
         if angle is not None:
-            while angle < -math.pi:
-                angle += 2 * math.pi
-            while angle > math.pi:
-                angle -= 2 * math.pi
+            angle = (angle + math.pi) % (2 * math.pi) - math.pi
             self.gimbal_yaw = angle
         else:
             self.gimbal_yaw = 0

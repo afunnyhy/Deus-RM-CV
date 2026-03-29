@@ -35,13 +35,13 @@ Makefile  text eol=lf
 
 # 4. 二进制文件：禁止 Git 尝试任何修改
 # 深度学习/模型文件
-*.onnx    binary
-*.engine  binary
-*.pt      binary
-*.pth     binary
-*.weights binary
-*.pb      binary
-*.tflite  binary
+*.onnx    binary -delta
+*.engine  binary -delta
+*.pt      binary -delta
+*.pth     binary -delta
+*.weights binary -delta
+*.pb      binary -delta
+*.tflite  binary -delta
 
 # 图像/多媒体
 *.png     binary
@@ -49,15 +49,15 @@ Makefile  text eol=lf
 *.jpeg    binary
 *.gif     binary
 *.ico     binary
-*.mp4     binary
-*.avi     binary
+*.mp4     binary -delta
+*.avi     binary -delta
 *.pdf     binary
 
 # 压缩包/库/可执行文件
-*.zip     binary
-*.tar     binary
-*.gz      binary
-*.7z      binary
+*.zip     binary -delta
+*.tar     binary -delta
+*.gz      binary -delta
+*.7z      binary -delta
 *.dll     binary
 *.so      binary
 *.a       binary

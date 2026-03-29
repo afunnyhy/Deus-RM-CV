@@ -5,7 +5,7 @@ import threading
 import multiprocessing as mp
 
 from setting import *
-from all_function import *
+from coord_converter import *
 from all_type import *
 
 from camera_get_photo import InitCamera  # 相机类
@@ -15,8 +15,9 @@ from light_detector import LightDetector  # 导入灯条解算类
 from pnp_solver import PnPSolver  # 导入PnP解算类
 from armor_chose import TargetSelector  # 导入目标选择类
 from pre_armor import Tracker  # 跟踪器类
+from ballistic_compensation import BallisticCompensator  # 弹道解算类
 
-from UART import VisionData_t  # 电控通信
+from uart import UartCommunication  # 电控通信
 from chase_sender import EnemyVisionSender  # 导航通信
 
 ROOT = os.getcwd()
@@ -35,9 +36,9 @@ def camera_process(shared_buf, shared_shape, frame_ready):
             if not ret:
                 fail_count += 1
                 time.sleep(0.01)
-                if fail_count > 15:
+                if fail_count > 5:
                     print(
-                        "[Camera Process] 连续 15 次读取失败，相机失去响应，进程主动自杀以强制触发操作系统的物理重置...")
+                        "[Camera Process] 连续 5 次读取失败，相机失去响应，进程主动自杀以强制触发操作系统的物理重置...")
                     # 尝试柔性释放资源
                     if hasattr(camera, '__del__'):
                         camera.__del__()
@@ -79,6 +80,7 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
     pnp_solver = PnPSolver()
     target_selector = TargetSelector()
     tra = Tracker()
+    ballistic_compensation = BallisticCompensator()
 
     t = time.time()
     time1 = time.time()
@@ -110,10 +112,11 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
     print("Start working...")
     while True:
         # 极速读取跨进程共享状态 (绕过内核锁带来的性能激增)
-        # 索引: 0:yaw, 1:pitch, 2:cmd_id
+        # 索引: 0:yaw, 1:pitch, 2:cmd_id, 12:speed
         curr_yaw = state_arr[0]
         curr_pitch = state_arr[1]
         curr_cmd_id = int(state_arr[2])
+        curr_speed = float(state_arr[12])
 
         detected_point = []
         if used_yolo:
@@ -139,7 +142,7 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
 
         if is_show_video:
             cv2.putText(out_img,
-                        f"receive yaw:{curr_yaw * 180 / math.pi:<9.3f} pitch:{curr_pitch * 180 / math.pi:<9.3f} ",
+                        f"receive yaw:{math.degrees(curr_yaw) :<9.3f} pitch:{math.degrees(curr_pitch):<9.3f} ",
                         (50, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
 
         if len(detected_point) > 0:
@@ -155,7 +158,7 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
 
                 if is_show_video:
                     cv2.putText(out_img,
-                                f"detecting x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{armor.yaw * 180.0 / math.pi:<9.3f}",
+                                f"detecting x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{math.degrees(armor.yaw):<9.3f}",
                                 (50, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
 
                 is_find = True
@@ -196,12 +199,12 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
 
             if predict_armor is not None:
                 # 用运动云台坐标系计算弹道
-                change_angle = ballistic_compensation(predict_armor.gimbal_pos)
+                change_angle = ballistic_compensation.calculate_angle(predict_armor.gimbal_pos, curr_speed)
                 ax, ay, az = predict_armor.gimbal_pos
 
                 if is_show_video:
                     cv2.putText(out_img,
-                                f"predicted x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{predicted_armor_yaw * 180.0 / math.pi:<9.3f}",
+                                f"predicted x:{ax:<9.3f} y:{ay:<9.3f} z:{az:<9.3f} yaw:{math.degrees(predicted_armor_yaw):<9.3f}",
                                 (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 200, 0), 2)
 
                 if az >= 0.1:
@@ -219,8 +222,8 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
                         angle_xoz = angle_xoz - (curr_yaw - last_vision_yaw)
 
                     # 是否锁上目标判断逻辑
-                    miss_yaw = miss_yaw_angle * math.pi / 180.0 / yaw_buffer_factor
-                    miss_pitch = miss_pitch_angle * math.pi / 180.0 / pitch_buffer_factor
+                    miss_yaw = math.radians(miss_yaw_angle)
+                    miss_pitch = math.radians(miss_pitch_angle)
                     dy = angle_xoz if send_radian_diff else (angle_xoz - curr_yaw)
                     dp = angle_yoz if send_radian_diff else (angle_yoz - curr_pitch)
                     lock = 0 if abs(dy) > miss_yaw or abs(dp) > miss_pitch else 1
@@ -241,7 +244,7 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
 
                     if is_show_video:
                         cv2.putText(out_img,
-                                    f"sending yaw:{angle_xoz * 180 / math.pi:<9.3f} pitch :{angle_yoz * 180 / math.pi:<9.3f} lock:{lock}",
+                                    f"sending yaw:{math.degrees(angle_xoz):<9.3f} pitch :{math.degrees(angle_yoz):<9.3f} lock:{lock}",
                                     (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
         else:
             offset_y, offset_p = (0.0, 0.0) if send_radian_diff else (float(curr_yaw), float(curr_pitch))
@@ -278,17 +281,25 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
         # 请求下一帧，带超时容错机制
         got_next_frame = False
         while not got_next_frame:
-            if frame_ready.wait(timeout=0.5):
+            if frame_ready.wait(timeout=0.25):
                 frame_ready.clear()
                 shape = (shared_shape[0], shared_shape[1], shared_shape[2])
                 size = shape[0] * shape[1] * shape[2]
                 orig_frame = np.frombuffer(shared_buf, dtype=np.uint8)[:size].reshape(shape).copy()
                 got_next_frame = True
             else:
-                print("[Inference Process] 警告：超过 0.5s 未收到相机新帧，重置锁定位和指令...")
+                print("[Inference Process] 警告：超过 0.25s 未收到相机新帧，重置锁定位和指令...")
                 tra.state = TracState.LOST
-                state_arr[3], state_arr[4], state_arr[5] = 0.0, 0.0, 0.0
-                state_arr[6], state_arr[7], state_arr[8] = 0.0, 0.0, 0.0
+                curr_yaw = state_arr[0]
+                curr_pitch = state_arr[1]
+                offset_y, offset_p = (0.0, 0.0) if send_radian_diff else (float(curr_yaw), float(curr_pitch))
+
+                state_arr[3] = float(offset_y)
+                state_arr[4] = float(offset_p)
+                state_arr[5] = 0.0
+                state_arr[6] = 0.0
+                state_arr[7] = 0.0
+                state_arr[8] = 0.0
 
                 if send_chase:
                     state_arr[9], state_arr[10], state_arr[11] = 0.0, 0.0, 0.0
@@ -306,7 +317,7 @@ if __name__ == "__main__":
     print("miss_pitch_angle:", miss_pitch_angle)
 
     # 与电控和导航的通信
-    vision = VisionData_t(baud_rate)
+    vision = UartCommunication(baud_rate)
     print("UART communication initialized. Baud rate:", baud_rate)
     if send_chase:
         sender = EnemyVisionSender(target_ip=send_target_ip, target_port=send_target_port)
@@ -322,7 +333,7 @@ if __name__ == "__main__":
     frame_ready = mp.Event()
 
     # 2. 消除 13 个带锁 mp.Value，使用无锁连续数组，完全避免内核态内核锁抢占开销
-    # [0:yaw, 1:pitch, 2:cmd_id, 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y, 12:reserved]
+    # [0:yaw, 1:pitch, 2:cmd_id, 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y, 12:speed]
     state_arr = mp.Array('d', 13, lock=False)
 
     # 启动双核双进程：将 Camera 取流，和 推理计算 彻底隔离开，跑满多核并实现 Zero-Copy
@@ -357,15 +368,24 @@ if __name__ == "__main__":
     def comms_sync_loop():
         # 微线程无锁同步：负责在主进程调度串口收发与状态共享
         while True:
-            state_arr[0] = float(vision.yaw)
-            state_arr[1] = float(vision.pitch)
-            state_arr[2] = float(vision.CmdID)
+            try:
+                state_arr[0] = float(vision.yaw)
+                state_arr[1] = float(vision.pitch)
+                state_arr[2] = float(vision.CmdID)
+                state_arr[12] = float(vision.speed)
 
-            vision.set_data(state_arr[3], state_arr[4], state_arr[5],
-                            int(state_arr[6]), int(state_arr[7]), int(state_arr[8]))
+                # 使用安全转换以防共享内存撕裂造成的 NaN 引发 ValueError
+                def safe_int(val):
+                    import math
+                    return 0 if math.isnan(val) else int(val)
 
-            if send_chase:
-                sender.update_data(bool(state_arr[9]), state_arr[10], state_arr[11])
+                vision.set_data(state_arr[3], state_arr[4], state_arr[5],
+                                safe_int(state_arr[6]), safe_int(state_arr[7]), safe_int(state_arr[8]))
+
+                if send_chase:
+                    sender.update_data(bool(state_arr[9]), state_arr[10], state_arr[11])
+            except Exception as e:
+                print(f"[UART Sync Thread] 警告：数据同步线程异常 ({e})")
 
             time.sleep(0.005)  # ~200Hz 数据交互帧率
 
