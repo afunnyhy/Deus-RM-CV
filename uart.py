@@ -15,6 +15,7 @@ class UartCommunication:
         self.CmdID = 2
 
         # 发送的数据 (Tx)
+        self.state = 2  # 当前程序运行的状态，0表示非正常如相机断线1表示正常
         self.pitch_angle = 0.0
         self.yaw_angle = 0.0
         self.distance = 0.0
@@ -78,7 +79,7 @@ class UartCommunication:
     def send(self):
         if self.uart and self.uart.is_open:
             try:
-                data = struct.pack('<BB', self.BEGIN, self.CmdID)
+                data = struct.pack('<BB', self.BEGIN, self.state)
                 data += struct.pack('<fff', float(self.pitch_angle), float(self.yaw_angle), float(self.distance))
                 data += struct.pack('<BBBB', self.center_lock, self.identify_target, self.identify_buff, self.END)
                 self.uart.write(data)
@@ -144,13 +145,14 @@ class UartCommunication:
         except Exception as e:
             print(f"串口读取异常: {e}")
 
-    def set_data(self, target_yaw, dif_pitch, dis, target, is_lock, buff=0):
+    def set_data(self, target_yaw, dif_pitch, dis, target, is_lock, state, buff=0):
         self.pitch_angle = dif_pitch
         self.yaw_angle = target_yaw
         self.distance = dis
         self.identify_target = target
         self.center_lock = is_lock
         self.identify_buff = buff
+        self.state = state
 
     def start(self):
         self.start_flag = True

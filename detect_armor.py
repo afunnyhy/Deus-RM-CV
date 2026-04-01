@@ -39,7 +39,7 @@ class ArmorDetector:  # 模型推理类
         if detect_color is None:
             detect_color = self.pos_cls
         else:
-            detect_color = Color.BLUE if detect_color == 1 else Color.RED
+            detect_color = Color.RED if detect_color == 1 else Color.BLUE
 
         out_img = orig_img
         # 运行推理

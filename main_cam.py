@@ -112,15 +112,17 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
     print("Start working...")
     while True:
         # 极速读取跨进程共享状态 (绕过内核锁带来的性能激增)
-        # 索引: 0:yaw, 1:pitch, 2:cmd_id, 12:speed
+        # 索引: 0:yaw, 1:pitch, 2:cmd_id, 12:speed, 13:state
+        state_arr[13] = 1.0  # 正常状态
         curr_yaw = state_arr[0]
         curr_pitch = state_arr[1]
-        curr_cmd_id = int(state_arr[2])
+        curr_cmd_id = int(state_arr[2])  # 0代表我方红色、1代表我方蓝色
         curr_speed = float(state_arr[12])
 
         detected_point = []
         if used_yolo:
-            all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
+            all_detect_armor, out_img = armor_de.detect_armor(orig_frame, curr_cmd_id)
+            # all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
         else:
             ret_flag, all_detect_armor, out_img = armor_de.get_armors_by_img(orig_frame)
 
@@ -315,6 +317,7 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
                 state_arr[6] = 0.0
                 state_arr[7] = 0.0
                 state_arr[8] = 0.0
+                state_arr[13] = 0.0  # 相机断线或无新帧，状态设为异常
 
                 if send_chase:
                     state_arr[9], state_arr[10], state_arr[11] = 0.0, 0.0, 0.0
@@ -348,8 +351,8 @@ if __name__ == "__main__":
     frame_ready = mp.Event()
 
     # 2. 消除 13 个带锁 mp.Value，使用无锁连续数组，完全避免内核态内核锁抢占开销
-    # [0:yaw, 1:pitch, 2:cmd_id, 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y, 12:speed]
-    state_arr = mp.Array('d', 13, lock=False)
+    # [0:yaw, 1:pitch, 2:cmd_id, 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y, 12:speed, 13:state]
+    state_arr = mp.Array('d', 14, lock=False)
 
     # 启动双核双进程：将 Camera 取流，和 推理计算 彻底隔离开，跑满多核并实现 Zero-Copy
     p_camera = mp.Process(target=camera_process, args=(shared_frame_buf, shared_frame_shape, frame_ready))
@@ -395,7 +398,7 @@ if __name__ == "__main__":
                     return 0 if math.isnan(val) else int(val)
 
                 vision.set_data(state_arr[3], state_arr[4], state_arr[5],
-                                safe_int(state_arr[6]), safe_int(state_arr[7]), safe_int(state_arr[8]))
+                                safe_int(state_arr[6]), safe_int(state_arr[7]), safe_int(state_arr[13]))
 
                 if send_chase:
                     sender.update_data(bool(state_arr[9]), state_arr[10], state_arr[11])
