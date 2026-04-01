@@ -221,12 +221,27 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
                     if tra.state == TracState.TEMP_LOST:
                         angle_xoz = angle_xoz - (curr_yaw - last_vision_yaw)
 
+                    # 提取此刻最新的云台物理回传值掩盖视觉滞后误差
+                    latest_yaw = state_arr[0]
+                    latest_pitch = state_arr[1]
+
                     # 是否锁上目标判断逻辑
                     miss_yaw = math.radians(miss_yaw_angle)
                     miss_pitch = math.radians(miss_pitch_angle)
-                    dy = angle_xoz if send_radian_diff else (angle_xoz - curr_yaw)
-                    dp = angle_yoz if send_radian_diff else (angle_yoz - curr_pitch)
-                    lock = 0 if abs(dy) > miss_yaw or abs(dp) > miss_pitch else 1
+
+                    if send_radian_diff:
+                        d_yaw = angle_xoz
+                        d_pitch = pitch_buffer_factor * (latest_pitch - change_angle)
+                    else:
+                        # 归一化后重新跟最新yaw和pitch做差值
+                        d_yaw = angle_xoz - latest_yaw
+                        d_pitch = angle_yoz - latest_pitch
+
+                        # 差异角度防止跨越 -PI 和 PI 时出现突变的 2*PI 误差
+                        d_yaw = (d_yaw + math.pi) % (2 * math.pi) - math.pi
+                        d_pitch = (d_pitch + math.pi) % (2 * math.pi) - math.pi
+
+                    lock = 0 if abs(d_yaw) > miss_yaw or abs(d_pitch) > miss_pitch else 1
 
                     # 将计算结果写入共享无锁数组
                     # 索引: 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y
