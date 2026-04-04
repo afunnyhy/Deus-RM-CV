@@ -41,4 +41,4 @@ def video_capture(capture_time=10000000000000):
 
 
 if __name__ == "__main__":
-    video_capture(capture_time=1000000000)
+    video_capture(capture_time=40)

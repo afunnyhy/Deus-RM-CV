@@ -81,25 +81,25 @@ class LightDetector:
             y_left = round(-b * (1 / small_num))
             y_right = round((width - 1 - b) * (1 / small_num))
         # 计算直线与图像边界交点
-        begin_point = (0, x_top)
-        end_point = (height - 1, x_bottom)
+        begin_point = (x_top, 0)
+        end_point = (x_bottom, height - 1)
         if 0 <= x_top < width:
             if x_bottom < 0:
-                end_point = (y_left, 0)
+                end_point = (0, y_left)
             elif x_bottom >= width:
-                end_point = (y_right, width - 1)
+                end_point = (width - 1, y_right)
         elif x_top < 0:
-            begin_point = (y_left, 0)
+            begin_point = (0, y_left)
             if x_bottom >= width:
-                end_point = (y_right, width - 1)
+                end_point = (width - 1, y_right)
         else:
-            begin_point = (y_right, width - 1)
+            begin_point = (width - 1, y_right)
             if x_bottom < 0:
-                end_point = (y_left, 0)
+                end_point = (0, y_left)
         begin_point = LightDetector.correct_point(begin_point, binary_image)  # 防止点超出图像边界
         end_point = LightDetector.correct_point(end_point, binary_image)
         # 生成直线上均匀分布的像素点
-        num_points = end_point[0] - begin_point[0] + 1  # 采样点数
+        num_points = end_point[1] - begin_point[1] + 1  # 采样点数
         # 计算 binary_image 每行白点直方图
         line_fitness_hist = np.sum(binary_image == 255, axis=1)
         line_fitness = np.sum(line_fitness_hist) / np.count_nonzero(line_fitness_hist)  # 灯条平均宽度
@@ -109,8 +109,8 @@ class LightDetector:
             # cv2.imshow("dilate fitness", binary_image)
             # cv2.waitKey(0)
         # 计算采样点的 x 和 y 坐标
-        x_vals = np.linspace(begin_point[1], end_point[1], num_points).astype(int)
-        y_vals = np.linspace(begin_point[0], end_point[0], num_points).astype(int)
+        x_vals = np.linspace(begin_point[0], end_point[0], num_points).astype(int)
+        y_vals = np.linspace(begin_point[1], end_point[1], num_points).astype(int)
         # 确保索引在图像范围内
         mask = (x_vals >= 0) & (x_vals < width) & (y_vals >= 0) & (y_vals < height)
         x_vals, y_vals = x_vals[mask], y_vals[mask]  # 过滤掉超出图像范围的点
@@ -138,16 +138,16 @@ class LightDetector:
     def correct_point(point, binary_image) -> tuple:
         """
         对检测到的点进行修正, 防止点超出图像边界。
-        :param point: 检测到的点坐标
-        :param binary_image: 灯条的二值化掩膜图像
-        :return: 修正后的点坐标
+        :param point: 检测到的点坐标 (x, y)
+        :param binary_image: 灯条的二值化掩膜图像或ROI
+        :return: 修正后的点坐标 (x, y)
         """
-        height, width = binary_image.shape
+        height, width = binary_image.shape[:2]
         # 检查点是否在图像范围内
-        y, x = point
-        y = max(0, min(height - 1, y))
+        x, y = point
         x = max(0, min(width - 1, x))
-        return y, x
+        y = max(0, min(height - 1, y))
+        return x, y
 
     @staticmethod
     def scale_points(top_point, bottom_point, scale) -> tuple:
@@ -284,42 +284,99 @@ class LightDetector:
         return True, ArmorPlate(output_points, color_cls, troop_cls, light_area,
                                 detection_data.confident), out_img  # 返回装甲板对象
 
+#
+# if __name__ == "__main__":
+#     # 测试代码
+#     test_photo_path = "./test_data/"
+#     test_color = Color.RED  # 要识别的颜色
+#
+#     from detect_armor import ArmorDetector
+#     from setting import *
+#     import torch
+#     import os
+#
+#     if test_color == Color.RED:
+#         my_color = Color.BLUE
+#     else:
+#         my_color = Color.RED
+#     # 初始化模型推断类
+#     armor_de = ArmorDetector(model_path, "best-cv.pt", friend_color)
+#     # 初始化灯条解算类
+#     light_pos = LightDetector()
+#     # 获取目录的所有.jpg或.png文件
+#     test_photo_list = os.listdir(test_photo_path)
+#     test_photo_list = [os.path.join(test_photo_path, photo) for photo in test_photo_list if
+#                        photo.endswith(".png") or photo.endswith(".jpg")]
+#     # 开始测试
+#     print("test photo path:", test_photo_path)
+#     print("test color:", test_color)
+#     for photo_path in test_photo_list:
+#         # 读取图片
+#         orig_frame = cv2.imread(photo_path)
+#         all_detect_armor, out_img = armor_de.detect_armor(orig_frame,1)
+#         find = False
+#         for detected_armor in all_detect_armor:
+#             ret, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor, out_img)
+#             if ret:
+#                 find = True
+#         if find:
+#             cv2.imshow(photo_path + " output", out_img)
+#             cv2.waitKey(0)
+#             cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    # 测试代码
-    test_photo_path = "./test_data/photo2/"
-    test_color = Color.BLUE  # 要识别的颜色
-
     from detect_armor import ArmorDetector
     from setting import *
-    import torch
-    import os
+    import cv2  # 确保导入了 cv2
+
+    # --- 配置区域 ---
+    video_path = "./20260401_110519_captured.mp4"  # 替换为你的视频路径
+    test_color = Color.RED
 
     if test_color == Color.RED:
         my_color = Color.BLUE
     else:
         my_color = Color.RED
-    # 初始化模型推断类
-    armor_de = ArmorDetector(model_path, model_name, torch.cuda.is_available(), my_color, ".pt")
-    # 初始化灯条解算类
+
+    # 初始化类
+    armor_de = ArmorDetector(model_path, "best-cv.pt", friend_color)
     light_pos = LightDetector()
-    # 获取目录的所有.jpg或.png文件
-    test_photo_list = os.listdir(test_photo_path)
-    test_photo_list = [os.path.join(test_photo_path, photo) for photo in test_photo_list if
-                       photo.endswith(".png") or photo.endswith(".jpg")]
-    # 开始测试
-    print("test photo path:", test_photo_path)
-    print("test color:", test_color)
-    for photo_path in test_photo_list:
-        # 读取图片
-        orig_frame = cv2.imread(photo_path)
-        all_detect_armor, out_img = armor_de.detect_armor(orig_frame)
+
+    # --- 视频流处理 ---
+    cap = cv2.VideoCapture(video_path)
+
+    if not cap.isOpened():
+        print(f"Error: 无法打开视频文件 {video_path}")
+        exit()
+
+    print(f"开始处理视频: {video_path}")
+    print("提示：按 'q' 键退出预览")
+
+    while True:
+        ret, frame = cap.read()
+
+        # 如果读取失败（视频结束），则跳出循环
+        if not ret:
+            print("视频处理完毕或读取失败。")
+            break
+
+        # 装甲板检测
+        all_detect_armor, out_img = armor_de.detect_armor(frame, 1)
+
         find = False
         for detected_armor in all_detect_armor:
-            ret, detected_armor, out_img = light_pos.extract_light_points(orig_frame, detected_armor, out_img)
-            if ret:
+            # 灯条解算
+            success, updated_armor, out_img = light_pos.extract_light_points(frame, detected_armor, out_img)
+            if success:
                 find = True
-        if find:
-            cv2.imshow(photo_path + " output", out_img)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
+
+        # 显示结果
+        cv2.imshow("Armor Detection - Video Mode", out_img)
+
+        # 等待 1ms 刷新画面。如果按下 'q' 键则退出
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    # 释放资源
+    cap.release()
+    cv2.destroyAllWindows()

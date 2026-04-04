@@ -12,11 +12,11 @@ pitch_buffer_factor = 0.75  # 0.75
 # 是否给电控发弧度差值(True为差值 False为目标绝对值)
 send_radian_diff = True
 # 最大lock误差角度
-miss_yaw_angle = 0.8  # 电控yaw与目标yaw的最大误差角度，单位:度，超过这个角度认为未锁定
-miss_pitch_angle = 0.6  # 电控pitch与目标pitch的最大误差角度，单位:度，超过这个角度认为未锁定
+miss_yaw_angle = 2.5  # 电控yaw与目标yaw的最大误差角度，单位:度，超过这个角度认为未锁定
+miss_pitch_angle = 2.0  # 电控pitch与目标pitch的最大误差角度，单位:度，超过这个角度认为未锁定
 
 # 是否显示识别和瞄准结果窗口
-is_show_video = True
+is_show_video = False
 
 # 对局需要手动设置的重要参数------------------------------------------------------------------------------------------
 # 我方颜色,与电控通信后根据裁判系统自动设置

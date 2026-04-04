@@ -108,6 +108,7 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
     armor = None
     predict_armor = None
     predicted_armor_yaw = 0
+    last_lock_time = 0.0
 
     print("Start working...")
     while True:
@@ -243,7 +244,18 @@ def inference_process(shared_buf, shared_shape, frame_ready, state_arr):
                         d_yaw = (d_yaw + math.pi) % (2 * math.pi) - math.pi
                         d_pitch = (d_pitch + math.pi) % (2 * math.pi) - math.pi
 
-                    lock = 0 if abs(d_yaw) > miss_yaw or abs(d_pitch) > miss_pitch else 1
+                    # 判断当前帧是否满足锁定条件
+                    current_condition_lock = 0 if abs(d_yaw) > miss_yaw or abs(d_pitch) > miss_pitch else 1
+
+                    # 触发1秒强制维持逻辑
+                    if current_condition_lock == 1:
+                        last_lock_time = time.time()
+                        lock = 1
+                    else:
+                        if time.time() - last_lock_time <= 1.0:
+                            lock = 1
+                        else:
+                            lock = 0
 
                     # 将计算结果写入共享无锁数组
                     # 索引: 3:cyaw, 4:cpitch, 5:dist, 6:target, 7:lock, 8:buff, 9:nav_det, 10:nav_x, 11:nav_y
